@@ -1,0 +1,24 @@
+# Конфигурация для локальной разработки
+server:
+  port: 8080
+  host: "0.0.0.0"
+
+database:
+  host: "localhost"
+  port: 5432
+  user: "student_user"
+  password: "student_pass"
+  dbname: "student_schedule_dev"
+  sslmode: "disable"
+
+redis:
+  addr: "localhost:6379"
+  db: 0
+
+jwt:
+  secret: "your-super-secret-jwt-key-change-in-production"
+  expiration_hours: 24
+
+logging:
+  level: "debug"
+  format: "text" # или "json"
