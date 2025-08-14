@@ -1,0 +1,103 @@
+syntax = "proto3";
+
+// Определяем пакет для proto-файла
+package schedule;
+
+// Опции для генерации Go кода
+option go_package = "./schedule";
+// Импортируем типы времени из стандартной библиотеки protobuf
+import "google/protobuf/timestamp.proto";
+
+// Сервис для работы с расписанием
+service ScheduleService {
+  // Получить расписание для группы на определенную дату
+  rpc GetScheduleForGroup(GetScheduleForGroupRequest)
+      returns (GetScheduleForGroupResponse);
+
+  // Получить активный снапшот расписания
+  rpc GetActiveScheduleSnapshot(GetActiveScheduleSnapshotRequest)
+      returns (GetActiveScheduleSnapshotResponse);
+
+  // Получить историю снапшотов
+  rpc GetScheduleSnapshotsHistory(GetScheduleSnapshotsHistoryRequest)
+      returns (GetScheduleSnapshotsHistoryResponse);
+}
+
+// Типы источников данных
+enum ScheduleSourceType {
+  SCHEDULE_SOURCE_TYPE_UNSPECIFIED = 0;
+  SCHEDULE_SOURCE_TYPE_MAIN = 1;
+  SCHEDULE_SOURCE_TYPE_CHANGE = 2;
+}
+
+// Типы изменений в расписании
+enum ScheduleChangeType {
+  SCHEDULE_CHANGE_TYPE_UNSPECIFIED = 0;
+  SCHEDULE_CHANGE_TYPE_REPLACEMENT = 1;
+  SCHEDULE_CHANGE_TYPE_CANCELLATION = 2;
+  SCHEDULE_CHANGE_TYPE_ADDITION = 3;
+}
+
+// Запрос на получение расписания для группы
+message GetScheduleForGroupRequest {
+  string group_name = 1;
+  google.protobuf.Timestamp date = 2;
+  string token = 3; // JWT токен для аутентификации
+}
+
+// Ответ с расписанием для группы
+message GetScheduleForGroupResponse {
+  bool success = 1;
+  string message = 2;
+  repeated ScheduleEntry schedule = 3;
+}
+
+// Запись в расписании
+message ScheduleEntry {
+  string id = 1;
+  string group_name = 2;
+  google.protobuf.Timestamp date = 3;
+  string time_start = 4;
+  string time_end = 5;
+  string subject = 6;
+  string teacher = 7;
+  string classroom = 8;
+  ScheduleSourceType source_type = 9;
+  string source_id = 10;
+}
+
+// Запрос на получение активного снапшота расписания
+message GetActiveScheduleSnapshotRequest {
+  string token = 1; // JWT токен для аутентификации
+}
+
+// Ответ с активным снапшотом расписания
+message GetActiveScheduleSnapshotResponse {
+  bool success = 1;
+  string message = 2;
+  ScheduleSnapshot snapshot = 3;
+}
+
+// Снапшот расписания
+message ScheduleSnapshot {
+  string id = 1;
+  string name = 2;
+  google.protobuf.Timestamp period_start = 3;
+  google.protobuf.Timestamp period_end = 4;
+  string data = 5; // JSON данные в виде строки
+  google.protobuf.Timestamp created_at = 6;
+  string source_url = 7;
+  bool is_active = 8;
+}
+
+// Запрос на получение истории снапшотов
+message GetScheduleSnapshotsHistoryRequest {
+  string token = 1; // JWT токен для аутентификации
+}
+
+// Ответ с историей снапшотов
+message GetScheduleSnapshotsHistoryResponse {
+  bool success = 1;
+  string message = 2;
+  repeated ScheduleSnapshot snapshots = 3;
+}

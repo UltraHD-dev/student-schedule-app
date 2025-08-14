@@ -10,11 +10,15 @@ echo "Генерация Go кода из proto файлов..."
 mkdir -p proto/gen
 
 # Генерируем Go код из users.proto
-# Важно: proto_path должен указывать на корень, где лежит proto файл
-# go_out и go-grpc_out указывают, куда класть сгенерированные файлы относительно proto_path
-protoc --proto_path=. \
-  --go_out=. \
-  --go-grpc_out=. \
+protoc --proto_path=proto \
+  --go_out=proto/gen \
+  --go-grpc_out=proto/gen \
   proto/users.proto
+
+# Генерируем Go код из schedule.proto
+protoc --proto_path=proto \
+  --go_out=proto/gen \
+  --go-grpc_out=proto/gen \
+  proto/schedule.proto
 
 echo "Генерация завершена успешно!"

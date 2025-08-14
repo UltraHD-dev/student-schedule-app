@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.5.1
 // - protoc             v6.31.1
-// source: proto/users.proto
+// source: users.proto
 
 // Определяем пакет для proto-файла
 
@@ -245,5 +245,5 @@ var UserService_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "proto/users.proto",
+	Metadata: "users.proto",
 }

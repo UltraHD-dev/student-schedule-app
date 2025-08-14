@@ -5,17 +5,20 @@ package main
 import (
 	"context"
 	"database/sql"
+	"github.com/Ultrahd-dev/student-schedule-app/backend/internal/changes"
+	"github.com/Ultrahd-dev/student-schedule-app/backend/internal/config"
+	"github.com/Ultrahd-dev/student-schedule-app/backend/internal/grpc"
+	"github.com/Ultrahd-dev/student-schedule-app/backend/internal/jwt"
+	"github.com/Ultrahd-dev/student-schedule-app/backend/internal/notifications"
+	"github.com/Ultrahd-dev/student-schedule-app/backend/internal/schedule"
+	"github.com/Ultrahd-dev/student-schedule-app/backend/internal/scraper"
+	"github.com/Ultrahd-dev/student-schedule-app/backend/internal/users"
+	_ "github.com/lib/pq"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
-
-	"github.com/Ultrahd-dev/student-schedule-app/backend/internal/config"
-	"github.com/Ultrahd-dev/student-schedule-app/backend/internal/grpc"
-	"github.com/Ultrahd-dev/student-schedule-app/backend/internal/jwt"
-	"github.com/Ultrahd-dev/student-schedule-app/backend/internal/users"
-	_ "github.com/lib/pq"
 )
 
 func main() {
@@ -51,17 +54,45 @@ func main() {
 	userService := users.NewService(userRepo)
 	jwtManager := jwt.NewManager(cfg.JWT.Secret, cfg.GetJWTTokenLifetime())
 
+	// Инициализируем schedule репозиторий и сервис
+	scheduleRepo := schedule.NewRepository(db)
+	scheduleService := schedule.NewService(scheduleRepo)
+
+	// Инициализируем notification репозиторий и сервис
+	notificationRepo := notifications.NewRepository(db)
+	notificationService := notifications.NewService(userRepo, scheduleRepo, notificationRepo)
+
+	// Инициализируем change detection сервис
+	changeService := changes.NewService(scheduleRepo)
+
+	// Инициализируем scraper сервис с передачей notification и change сервисов
+	scraperConfig := scraper.Config{
+		BaseURL: "https://kcpt72.ru/schedule/",
+		Timeout: 30 * time.Second,
+	}
+	scraperService := scraper.NewService(scraperConfig, scheduleRepo, notificationService, changeService)
+
+	// Передаем notificationService в scraperService
+	// TODO: Реализовать передачу notificationService в scraperService
+
 	// Инициализируем gRPC сервер
 	grpcServer := grpc.NewServer(userService, jwtManager)
 
 	// Запускаем gRPC сервер в отдельной горутине
 	go func() {
-		if err := grpcServer.Start(50051); err != nil {
+		if err := grpcServer.Start(50051, scheduleService, userService); err != nil { // Передаем scheduleService
 			log.Fatalf("Ошибка запуска gRPC сервера: %v", err)
 		}
 	}()
 
+	// Запускаем периодический парсинг в отдельной горутине
+	scraperCtx, scraperCancel := context.WithCancel(context.Background())
+	go scraperService.StartPeriodicScraping(scraperCtx)
+
 	log.Println("gRPC API Gateway запущен на порту 50051")
+	log.Println("Web Scraper Service запущен")
+	log.Println("Change Detection Service запущен")
+	log.Println("Notification Service запущен")
 	log.Println("Доступные сервисы:")
 	log.Println("  UserService:")
 	log.Println("    - RegisterStudent")
@@ -74,6 +105,9 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 	log.Println("Получен сигнал завершения, останавливаем сервер...")
+
+	// Отменяем контекст для scraper сервиса
+	scraperCancel()
 
 	log.Println("Сервер остановлен")
 }

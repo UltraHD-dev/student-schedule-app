@@ -9,7 +9,9 @@ import (
 	"net"
 	"time"
 
+	schedulegrpc "github.com/Ultrahd-dev/student-schedule-app/backend/internal/grpc/schedule" // Для регистрации
 	"github.com/Ultrahd-dev/student-schedule-app/backend/internal/jwt"
+	"github.com/Ultrahd-dev/student-schedule-app/backend/internal/schedule" // Пакет schedule
 	"github.com/Ultrahd-dev/student-schedule-app/backend/internal/users"
 	pb "github.com/Ultrahd-dev/student-schedule-app/backend/proto/gen/users"
 	"google.golang.org/grpc"
@@ -225,7 +227,8 @@ func (s *Server) GetProfile(ctx context.Context, req *pb.GetProfileRequest) (*pb
 }
 
 // Start запускает gRPC сервер
-func (s *Server) Start(port int) error {
+// Исправленная сигнатура метода
+func (s *Server) Start(port int, scheduleService *schedule.Service, userService *users.Service) error {
 	// Создаем TCP слушатель
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
@@ -235,8 +238,12 @@ func (s *Server) Start(port int) error {
 	// Создаем gRPC сервер
 	grpcServer := grpc.NewServer()
 
-	// Регистрируем наш сервис
+	// Регистрируем наши сервисы
 	pb.RegisterUserServiceServer(grpcServer, s)
+
+	// Регистрируем Schedule Service
+	// Предполагая, что у вас есть функция RegisterService в пакете schedulegrpc
+	schedulegrpc.RegisterService(grpcServer, scheduleService, s.jwtManager, userService)
 
 	// Включаем Reflection API для grpcurl и других инструментов
 	reflection.Register(grpcServer)

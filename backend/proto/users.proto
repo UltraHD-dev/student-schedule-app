@@ -4,7 +4,7 @@ syntax = "proto3";
 package users;
 
 // Опции для генерации Go кода
-option go_package = "./proto/gen/users;users";
+option go_package = "./users";
 // Сервис управления пользователями
 service UserService {
   // Регистрация студента

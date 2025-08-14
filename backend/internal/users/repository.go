@@ -121,3 +121,34 @@ func (r *Repository) CreateTeacher(ctx context.Context, teacher *Teacher) error 
 
 	return nil
 }
+
+// GetStudentsByGroup получает всех студентов определенной группы
+func (r *Repository) GetStudentsByGroup(ctx context.Context, groupName string) ([]uuid.UUID, error) {
+	query := `
+		SELECT s.user_id
+		FROM students s
+		JOIN users u ON s.user_id = u.id
+		WHERE s.group_name = $1 AND u.is_active = true`
+
+	rows, err := r.db.QueryContext(ctx, query, groupName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get students by group: %w", err)
+	}
+	defer rows.Close()
+
+	var studentIDs []uuid.UUID
+	for rows.Next() {
+		var studentID uuid.UUID
+		err := rows.Scan(&studentID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan student ID: %w", err)
+		}
+		studentIDs = append(studentIDs, studentID)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating rows: %w", err)
+	}
+
+	return studentIDs, nil
+}
