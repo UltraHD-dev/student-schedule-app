@@ -1,3 +1,5 @@
+// Package users определяет модели данных для работы с пользователями
+// В соответствии с ТЗ: "User Management Service - управление пользователями"
 package users
 
 import (
@@ -6,7 +8,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// Role represents user role in the system
+// Role представляет роль пользователя в системе
 type Role string
 
 const (
@@ -15,7 +17,7 @@ const (
 	RoleAdmin   Role = "admin"
 )
 
-// User represents a user in the system
+// User представляет пользователя в системе
 type User struct {
 	ID        uuid.UUID  `db:"id"`
 	Email     string     `db:"email"`
@@ -26,7 +28,7 @@ type User struct {
 	IsActive  bool       `db:"is_active"`
 }
 
-// Student represents additional information for student users
+// Student представляет дополнительную информацию для студента
 type Student struct {
 	UserID        uuid.UUID `db:"user_id"`
 	GroupName     string    `db:"group_name"`
@@ -35,7 +37,7 @@ type Student struct {
 	StudentNumber string    `db:"student_number"`
 }
 
-// Teacher represents additional information for teacher users
+// Teacher представляет дополнительную информацию для преподавателя
 type Teacher struct {
 	UserID     uuid.UUID `db:"user_id"`
 	FullName   string    `db:"full_name"`

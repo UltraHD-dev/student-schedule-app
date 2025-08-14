@@ -6,8 +6,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"github.com/google/uuid"
-	"github.com/lib/pq"
 	"time"
 )
 
@@ -24,7 +22,8 @@ func NewRepository(db *sql.DB) *Repository {
 // CreateSnapshot создает новый снапшот расписания
 func (r *Repository) CreateSnapshot(ctx context.Context, snapshot *ScheduleSnapshot) error {
 	query := `
-		INSERT INTO schedule_snapshots (id, name, period_start, period_end, data, source_url, is_active)
+		INSERT INTO schedule_snapshots 
+		(id, name, period_start, period_end, data, source_url, is_active)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		RETURNING created_at`
 
@@ -153,111 +152,20 @@ func (r *Repository) GetCurrentScheduleForGroup(ctx context.Context, groupName s
 	return schedules, nil
 }
 
-// UpdateCurrentSchedule обновляет актуальное расписание
-func (r *Repository) UpdateCurrentSchedule(ctx context.Context, schedules []CurrentSchedule) error {
-	// Начинаем транзакцию
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
-	}
-	defer tx.Rollback()
-
-	// Сначала деактивируем все текущие записи для групп и дат из новых записей
-	if len(schedules) > 0 {
-		// Собираем уникальные группы и даты
-		groupDateMap := make(map[string]time.Time)
-		for _, s := range schedules {
-			groupDateMap[s.GroupName] = s.Date
-		}
-
-		// Формируем запрос для деактивации
-		groupNames := make([]string, 0, len(groupDateMap))
-		dates := make([]time.Time, 0, len(groupDateMap))
-		for group, date := range groupDateMap {
-			groupNames = append(groupNames, group)
-			dates = append(dates, date)
-		}
-
-		// Деактивируем старые записи
-		deactivateQuery := `
-			UPDATE current_schedule 
-			SET is_active = false 
-			WHERE group_name = ANY($1) AND date = ANY($2) AND is_active = true`
-		_, err = tx.ExecContext(ctx, deactivateQuery, pq.Array(groupNames), pq.Array(dates))
-		if err != nil {
-			return fmt.Errorf("failed to deactivate old schedule entries: %w", err)
-		}
-	}
-
-	// Вставляем новые записи
-	for _, schedule := range schedules {
-		insertQuery := `
-			INSERT INTO current_schedule 
-			(id, group_name, date, time_start, time_end, subject, teacher, classroom, source_type, source_id, is_active)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`
-
-		_, err := tx.ExecContext(ctx, insertQuery,
-			schedule.ID, schedule.GroupName, schedule.Date, schedule.TimeStart,
-			schedule.TimeEnd, schedule.Subject, schedule.Teacher, schedule.Classroom,
-			schedule.SourceType, schedule.SourceID, schedule.IsActive)
-		if err != nil {
-			return fmt.Errorf("failed to insert schedule entry: %w", err)
-		}
-	}
-
-	// Коммитим транзакцию
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
-	}
-
-	return nil
-}
-
-// GetScheduleSnapshotByID получает снапшот расписания по ID
-func (r *Repository) GetScheduleSnapshotByID(ctx context.Context, id uuid.UUID) (*ScheduleSnapshot, error) {
-	query := `
-		SELECT id, name, period_start, period_end, data, created_at, source_url, is_active
-		FROM schedule_snapshots
-		WHERE id = $1`
-
-	snapshot := &ScheduleSnapshot{}
-	err := r.db.QueryRowContext(ctx, query, id).Scan(
-		&snapshot.ID,
-		&snapshot.Name,
-		&snapshot.PeriodStart,
-		&snapshot.PeriodEnd,
-		&snapshot.Data,
-		&snapshot.CreatedAt,
-		&snapshot.SourceURL,
-		&snapshot.IsActive,
-	)
-
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("schedule snapshot not found")
-		}
-		return nil, fmt.Errorf("failed to get schedule snapshot: %w", err)
-	}
-
-	return snapshot, nil
-}
-
 // BeginTx начинает транзакцию
 func (r *Repository) BeginTx(ctx context.Context) (*sql.Tx, error) {
 	return r.db.BeginTx(ctx, nil)
 }
 
 // GetCurrentScheduleEntry получает запись из current_schedule по группе, дате и времени начала
-// Принимает *sql.Tx для работы в рамках транзакции
-func (r *Repository) GetCurrentScheduleEntry(tx *sql.Tx, groupName string, date time.Time, timeStart string) (*CurrentSchedule, error) {
+func (r *Repository) GetCurrentScheduleEntry(ctx context.Context, groupName string, date time.Time, timeStart string) (*CurrentSchedule, error) {
 	query := `
-        SELECT id, group_name, date, time_start, time_end, subject, teacher, classroom, source_type, source_id, is_active
-        FROM current_schedule
-        WHERE group_name = $1 AND date = $2 AND time_start = $3 AND is_active = true`
+		SELECT id, group_name, date, time_start, time_end, subject, teacher, classroom, source_type, source_id, is_active
+		FROM current_schedule
+		WHERE group_name = $1 AND date = $2 AND time_start = $3 AND is_active = true`
 
 	entry := &CurrentSchedule{}
-	// Используем tx.QueryRow вместо r.db.QueryRowContext
-	err := tx.QueryRow(query, groupName, date, timeStart).Scan(
+	err := r.db.QueryRowContext(ctx, query, groupName, date, timeStart).Scan(
 		&entry.ID,
 		&entry.GroupName,
 		&entry.Date,
@@ -279,15 +187,13 @@ func (r *Repository) GetCurrentScheduleEntry(tx *sql.Tx, groupName string, date 
 }
 
 // UpdateCurrentScheduleEntry обновляет запись в current_schedule
-// Принимает *sql.Tx для работы в рамках транзакции
-func (r *Repository) UpdateCurrentScheduleEntry(tx *sql.Tx, entry *CurrentSchedule) error {
+func (r *Repository) UpdateCurrentScheduleEntry(ctx context.Context, entry *CurrentSchedule) error {
 	query := `
-        UPDATE current_schedule
-        SET subject = $1, teacher = $2, classroom = $3, source_type = $4, source_id = $5, is_active = $6
-        WHERE id = $7`
+		UPDATE current_schedule
+		SET subject = $1, teacher = $2, classroom = $3, source_type = $4, source_id = $5, is_active = $6
+		WHERE id = $7`
 
-	// Используем tx.Exec вместо r.db.ExecContext
-	_, err := tx.Exec(query,
+	_, err := r.db.ExecContext(ctx, query,
 		entry.Subject,
 		entry.Teacher,
 		entry.Classroom,
@@ -301,15 +207,13 @@ func (r *Repository) UpdateCurrentScheduleEntry(tx *sql.Tx, entry *CurrentSchedu
 }
 
 // CreateCurrentScheduleEntry создает новую запись в current_schedule
-// Принимает *sql.Tx для работы в рамках транзакции
-func (r *Repository) CreateCurrentScheduleEntry(tx *sql.Tx, entry *CurrentSchedule) error {
+func (r *Repository) CreateCurrentScheduleEntry(ctx context.Context, entry *CurrentSchedule) error {
 	query := `
-        INSERT INTO current_schedule 
-        (id, group_name, date, time_start, time_end, subject, teacher, classroom, source_type, source_id, is_active)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`
+		INSERT INTO current_schedule 
+		(id, group_name, date, time_start, time_end, subject, teacher, classroom, source_type, source_id, is_active)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`
 
-	// Используем tx.Exec вместо r.db.ExecContext
-	_, err := tx.Exec(query,
+	_, err := r.db.ExecContext(ctx, query,
 		entry.ID,
 		entry.GroupName,
 		entry.Date,

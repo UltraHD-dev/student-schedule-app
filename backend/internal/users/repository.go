@@ -1,3 +1,5 @@
+// Package users предоставляет доступ к хранению пользователей
+// В соответствии с ТЗ: "User Management Service - управление пользователями"
 package users
 
 import (
@@ -7,19 +9,20 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"golang.org/x/crypto/bcrypt"
 )
 
-// Repository provides access to user storage
+// Repository предоставляет доступ к хранению пользователей
 type Repository struct {
 	db *sql.DB
 }
 
-// NewRepository creates a new user repository
+// NewRepository создает новый репозиторий пользователей
 func NewRepository(db *sql.DB) *Repository {
 	return &Repository{db: db}
 }
 
-// CreateUser creates a new user in the database
+// CreateUser создает нового пользователя в базе данных
 func (r *Repository) CreateUser(ctx context.Context, user *User) error {
 	query := `
 		INSERT INTO users (id, email, password_hash, role, is_active)
@@ -38,12 +41,12 @@ func (r *Repository) CreateUser(ctx context.Context, user *User) error {
 	return nil
 }
 
-// GetUserByEmail retrieves a user by email
+// GetUserByEmail получает пользователя по email
 func (r *Repository) GetUserByEmail(ctx context.Context, email string) (*User, error) {
 	query := `
 		SELECT id, email, password_hash, role, created_at, last_login, is_active
 		FROM users
-		WHERE email = $1 AND is_active = true`
+		WHERE email = $1`
 
 	user := &User{}
 	err := r.db.QueryRowContext(ctx, query, email).Scan(
@@ -58,7 +61,7 @@ func (r *Repository) GetUserByEmail(ctx context.Context, email string) (*User, e
 
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("user not found")
+			return nil, fmt.Errorf("user not found: %w", err)
 		}
 		return nil, fmt.Errorf("failed to get user by email: %w", err)
 	}
@@ -66,12 +69,12 @@ func (r *Repository) GetUserByEmail(ctx context.Context, email string) (*User, e
 	return user, nil
 }
 
-// GetUserByID retrieves a user by ID
+// GetUserByID получает пользователя по ID
 func (r *Repository) GetUserByID(ctx context.Context, id uuid.UUID) (*User, error) {
 	query := `
 		SELECT id, email, password_hash, role, created_at, last_login, is_active
 		FROM users
-		WHERE id = $1 AND is_active = true`
+		WHERE id = $1`
 
 	user := &User{}
 	err := r.db.QueryRowContext(ctx, query, id).Scan(
@@ -86,7 +89,7 @@ func (r *Repository) GetUserByID(ctx context.Context, id uuid.UUID) (*User, erro
 
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("user not found")
+			return nil, fmt.Errorf("user not found: %w", err)
 		}
 		return nil, fmt.Errorf("failed to get user by ID: %w", err)
 	}
@@ -94,7 +97,7 @@ func (r *Repository) GetUserByID(ctx context.Context, id uuid.UUID) (*User, erro
 	return user, nil
 }
 
-// CreateStudent creates a student profile
+// CreateStudent создает профиль студента
 func (r *Repository) CreateStudent(ctx context.Context, student *Student) error {
 	query := `
 		INSERT INTO students (user_id, group_name, faculty, course, student_number)
@@ -108,7 +111,7 @@ func (r *Repository) CreateStudent(ctx context.Context, student *Student) error 
 	return nil
 }
 
-// CreateTeacher creates a teacher profile
+// CreateTeacher создает профиль преподавателя
 func (r *Repository) CreateTeacher(ctx context.Context, teacher *Teacher) error {
 	query := `
 		INSERT INTO teachers (user_id, full_name, department, position, teacher_id)
@@ -151,4 +154,26 @@ func (r *Repository) GetStudentsByGroup(ctx context.Context, groupName string) (
 	}
 
 	return studentIDs, nil
+}
+
+// AuthenticateUser аутентифицирует пользователя по email и паролю
+func (r *Repository) AuthenticateUser(ctx context.Context, email, password string) (*User, error) {
+	// Получаем пользователя по email
+	user, err := r.GetUserByEmail(ctx, email)
+	if err != nil {
+		return nil, fmt.Errorf("invalid credentials")
+	}
+
+	// Проверяем, что пользователь активен
+	if !user.IsActive {
+		return nil, fmt.Errorf("user account is deactivated")
+	}
+
+	// Сравниваем хэш пароля
+	err = bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(password))
+	if err != nil {
+		return nil, fmt.Errorf("invalid credentials")
+	}
+
+	return user, nil
 }

@@ -44,7 +44,7 @@ func (c *Client) ExportToCSV(ctx context.Context, sheetURL string) ([][]string, 
 	// Преобразуем URL Google Таблицы в URL для экспорта в CSV
 	exportURL := c.convertToExportURL(sheetURL)
 
-	log.Printf("Экспортируем таблицу из %s (исходный URL: %s)", exportURL, sheetURL)
+	log.Printf("Экспортируем таблицу из %s", exportURL)
 
 	// Выполняем HTTP запрос
 	req, err := http.NewRequestWithContext(ctx, "GET", exportURL, nil)
@@ -63,12 +63,16 @@ func (c *Client) ExportToCSV(ctx context.Context, sheetURL string) ([][]string, 
 
 	// Проверяем статус ответа
 	if resp.StatusCode != http.StatusOK {
-		// Читаем тело ответа для отладки
+		// Читаем тело ответа для отладки (ограничим длину)
 		body, _ := io.ReadAll(resp.Body)
-		log.Printf("Таблица вернула статус %d. Тело ответа: %s", resp.StatusCode, string(body))
+		bodyStr := string(body)
+		if len(bodyStr) > 500 {
+			bodyStr = bodyStr[:500] + "... (обрезано)"
+		}
+		log.Printf("Таблица вернула статус %d. Тело ответа: %s", resp.StatusCode, bodyStr)
 
-		// Если статус 404, логируем URL для отладки
-		if resp.StatusCode == http.StatusNotFound {
+		// Если статус 400 или 404, логируем URL для отладки
+		if resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusNotFound {
 			log.Printf("Таблица не найдена: %s", exportURL)
 		}
 		return nil, fmt.Errorf("Google Таблица вернула статус %d", resp.StatusCode)
@@ -89,23 +93,21 @@ func (c *Client) convertToExportURL(sheetURL string) string {
 	// Логируем исходный URL для отладки
 	log.Printf("Исходный URL таблицы: %s", sheetURL)
 
-	// Убираем все параметры из URL если есть
+	// Убираем параметры из URL если есть
 	if idx := strings.Index(sheetURL, "?"); idx != -1 {
 		sheetURL = sheetURL[:idx]
 	}
 
-	// Заменяем /edit на /export
+	// Убираем /edit из URL если есть
 	if strings.HasSuffix(sheetURL, "/edit") {
 		sheetURL = sheetURL[:len(sheetURL)-5] // Убираем "/edit"
-		sheetURL += "/export"
-	} else if strings.Contains(sheetURL, "/d/") {
-		// Если URL содержит ID таблицы, но не заканчивается на /edit
-		// Добавляем /export
-		if !strings.HasSuffix(sheetURL, "/") {
-			sheetURL += "/"
-		}
-		sheetURL += "export"
 	}
+
+	// Добавляем /export
+	if !strings.HasSuffix(sheetURL, "/") {
+		sheetURL += "/"
+	}
+	sheetURL += "export"
 
 	// Добавляем параметры для экспорта в CSV
 	exportURL := sheetURL + "?format=csv&gid=0"
@@ -154,6 +156,87 @@ func (c *Client) ParseScheduleRecords(csvRecords [][]string) ([]ScheduleRecord, 
 			TimeStart: strings.TrimSpace(row[columns["Время начала"]]),
 			TimeEnd:   strings.TrimSpace(row[columns["Время окончания"]]),
 			DayOfWeek: strings.TrimSpace(row[columns["День недели"]]),
+		}
+
+		// Пропускаем пустые записи
+		if record.GroupName == "" || record.Subject == "" {
+			continue
+		}
+
+		records = append(records, record)
+	}
+
+	return records, nil
+}
+
+// ChangeRecord представляет запись об изменении в расписании
+type ChangeRecord struct {
+	GroupName       string    `json:"group_name"`
+	Date            time.Time `json:"date"`
+	TimeStart       string    `json:"time_start"`
+	TimeEnd         string    `json:"time_end"`
+	Subject         string    `json:"subject"`
+	Teacher         string    `json:"teacher"`
+	Classroom       string    `json:"classroom"`
+	ChangeType      string    `json:"change_type"`
+	OriginalSubject string    `json:"original_subject"`
+}
+
+// ParseChangeRecords парсит записи об изменениях из CSV данных
+// В соответствии с примером из ТЗ:
+// Группа | Дата | Время начала | Время окончания | Предмет | Преподаватель | Аудитория | Тип изменения | Оригинальный предмет
+func (c *Client) ParseChangeRecords(csvRecords [][]string) ([]ChangeRecord, error) {
+	if len(csvRecords) < 2 {
+		return nil, fmt.Errorf("недостаточно данных в CSV")
+	}
+
+	// Находим индексы колонок в заголовке
+	header := csvRecords[0]
+	columns := map[string]int{}
+	for i, col := range header {
+		columns[strings.TrimSpace(col)] = i
+	}
+
+	// Проверяем наличие обязательных колонок для изменений
+	requiredColumns := []string{"Группа", "Дата", "Время начала", "Время окончания", "Предмет", "Преподаватель", "Аудитория", "Тип изменения"}
+	for _, col := range requiredColumns {
+		if _, exists := columns[col]; !exists {
+			return nil, fmt.Errorf("отсутствует обязательная колонка: %s", col)
+		}
+	}
+
+	// Парсим данные
+	var records []ChangeRecord
+	for i := 1; i < len(csvRecords); i++ {
+		row := csvRecords[i]
+		if len(row) < len(header) {
+			// Пропускаем неполные строки
+			continue
+		}
+
+		// Парсим дату
+		dateStr := strings.TrimSpace(row[columns["Дата"]])
+		date, err := time.Parse("02.01.2006", dateStr)
+		if err != nil {
+			log.Printf("Ошибка парсинга даты %s: %v", dateStr, err)
+			continue
+		}
+
+		record := ChangeRecord{
+			GroupName:       strings.TrimSpace(row[columns["Группа"]]),
+			Date:            date,
+			TimeStart:       strings.TrimSpace(row[columns["Время начала"]]),
+			TimeEnd:         strings.TrimSpace(row[columns["Время окончания"]]),
+			Subject:         strings.TrimSpace(row[columns["Предмет"]]),
+			Teacher:         strings.TrimSpace(row[columns["Преподаватель"]]),
+			Classroom:       strings.TrimSpace(row[columns["Аудитория"]]),
+			ChangeType:      strings.TrimSpace(row[columns["Тип изменения"]]),
+			OriginalSubject: "", // По умолчанию пусто
+		}
+
+		// Если есть колонка "Оригинальный предмет", заполняем её
+		if idx, exists := columns["Оригинальный предмет"]; exists && idx < len(row) {
+			record.OriginalSubject = strings.TrimSpace(row[idx])
 		}
 
 		// Пропускаем пустые записи

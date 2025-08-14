@@ -79,7 +79,7 @@ func (s *Service) ApplyChanges(ctx context.Context, changes []schedule.ScheduleC
 // updateCurrentSchedule обновляет запись в current_schedule на основе изменения
 func (s *Service) updateCurrentSchedule(tx *sql.Tx, change *schedule.ScheduleChange) error {
 	// 1. Проверяем, существует ли уже запись в current_schedule для этой пары
-	existing, err := s.scheduleRepo.GetCurrentScheduleEntry(tx, change.GroupName, change.Date, change.TimeStart)
+	existing, err := s.scheduleRepo.GetCurrentScheduleEntry(context.Background(), change.GroupName, change.Date, change.TimeStart)
 	if err != nil && err != sql.ErrNoRows {
 		return fmt.Errorf("ошибка получения существующей записи: %w", err)
 	}
@@ -93,7 +93,7 @@ func (s *Service) updateCurrentSchedule(tx *sql.Tx, change *schedule.ScheduleCha
 		existing.SourceType = "change"
 		existing.SourceID = change.ID
 
-		err = s.scheduleRepo.UpdateCurrentScheduleEntry(tx, existing)
+		err = s.scheduleRepo.UpdateCurrentScheduleEntry(context.Background(), existing)
 		if err != nil {
 			return fmt.Errorf("ошибка обновления существующей записи: %w", err)
 		}
@@ -113,7 +113,7 @@ func (s *Service) updateCurrentSchedule(tx *sql.Tx, change *schedule.ScheduleCha
 			IsActive:   true,
 		}
 
-		err = s.scheduleRepo.CreateCurrentScheduleEntry(tx, newEntry)
+		err = s.scheduleRepo.CreateCurrentScheduleEntry(context.Background(), newEntry)
 		if err != nil {
 			return fmt.Errorf("ошибка создания новой записи: %w", err)
 		}

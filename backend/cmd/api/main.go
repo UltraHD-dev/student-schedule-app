@@ -5,6 +5,12 @@ package main
 import (
 	"context"
 	"database/sql"
+	"log"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
 	"github.com/Ultrahd-dev/student-schedule-app/backend/internal/changes"
 	"github.com/Ultrahd-dev/student-schedule-app/backend/internal/config"
 	"github.com/Ultrahd-dev/student-schedule-app/backend/internal/grpc"
@@ -14,11 +20,6 @@ import (
 	"github.com/Ultrahd-dev/student-schedule-app/backend/internal/scraper"
 	"github.com/Ultrahd-dev/student-schedule-app/backend/internal/users"
 	_ "github.com/lib/pq"
-	"log"
-	"os"
-	"os/signal"
-	"syscall"
-	"time"
 )
 
 func main() {
@@ -65,25 +66,40 @@ func main() {
 	// Инициализируем change detection сервис
 	changeService := changes.NewService(scheduleRepo)
 
-	// Инициализируем scraper сервис с передачей notification и change сервисов
+	// Инициализируем scraper сервис
 	scraperConfig := scraper.Config{
 		BaseURL: "https://kcpt72.ru/schedule/",
 		Timeout: 30 * time.Second,
 	}
 	scraperService := scraper.NewService(scraperConfig, scheduleRepo, notificationService, changeService)
 
-	// Передаем notificationService в scraperService
-	// TODO: Реализовать передачу notificationService в scraperService
-
 	// Инициализируем gRPC сервер
 	grpcServer := grpc.NewServer(userService, jwtManager)
 
 	// Запускаем gRPC сервер в отдельной горутине
 	go func() {
-		if err := grpcServer.Start(50051, scheduleService, userService); err != nil { // Передаем scheduleService
+		if err := grpcServer.Start(50051, scheduleService, userService); err != nil {
 			log.Fatalf("Ошибка запуска gRPC сервера: %v", err)
 		}
 	}()
+
+	// Немедленный запуск парсинга при старте сервера
+	// В соответствии с ТЗ: "Немедленный запуск парсинга"
+	log.Println("Немедленный запуск парсинга при старте сервера")
+
+	// Создаем контекст для немедленного парсинга
+	immediateCtx, immediateCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer immediateCancel()
+
+	// Запускаем немедленный парсинг основного расписания
+	if err := scraperService.ScrapeMainSchedule(immediateCtx); err != nil {
+		log.Printf("Ошибка при немедленном парсинге основного расписания: %v", err)
+	}
+
+	// Запускаем немедленный парсинг изменений в расписании
+	if err := scraperService.ScrapeScheduleChanges(immediateCtx); err != nil {
+		log.Printf("Ошибка при немедленном парсинге изменений в расписании: %v", err)
+	}
 
 	// Запускаем периодический парсинг в отдельной горутине
 	scraperCtx, scraperCancel := context.WithCancel(context.Background())

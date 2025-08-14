@@ -20,15 +20,18 @@ import (
 	"github.com/Ultrahd-dev/student-schedule-app/backend/internal/notifications"
 	"github.com/Ultrahd-dev/student-schedule-app/backend/internal/schedule"
 	"github.com/Ultrahd-dev/student-schedule-app/backend/internal/scraper/gsheet"
+	"github.com/Ultrahd-dev/student-schedule-app/backend/internal/scraper/gsheetapi"
 	"github.com/google/uuid"
 )
 
+// Service предоставляет функции для парсинга данных с сайта колледжа
 type Service struct {
 	httpClient          *http.Client
 	gsheetClient        *gsheet.Client
+	gsheetAPIClient     *gsheetapi.Client
 	scheduleRepo        *schedule.Repository
-	notificationService *notifications.Service // Полное имя типа
-	changeService       *changes.Service       // Полное имя типа
+	notificationService *notifications.Service
+	changeService       *changes.Service
 	baseURL             string
 	lastChangeHash      string // Хэш последних данных об изменениях
 }
@@ -47,6 +50,7 @@ func NewService(config Config, scheduleRepo *schedule.Repository,
 			Timeout: config.Timeout,
 		},
 		gsheetClient:        gsheet.NewClient(),
+		gsheetAPIClient:     nil, // Пока не используем Google Sheets API клиент
 		scheduleRepo:        scheduleRepo,
 		notificationService: notificationService,
 		changeService:       changeService,
@@ -60,17 +64,8 @@ func (s *Service) ScrapeMainSchedule(ctx context.Context) error {
 	log.Println("Начинаем парсинг основного расписания с сайта колледжа")
 
 	// 1. Запрос к https://kcpt72.ru/schedule/
-	// Создаем контекст с таймаутом для HTTP-запроса
-	httpCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-
 	log.Printf("Отправляем запрос к %s", s.baseURL)
-	req, err := http.NewRequestWithContext(httpCtx, "GET", s.baseURL, nil)
-	if err != nil {
-		return fmt.Errorf("ошибка создания HTTP запроса: %w", err)
-	}
-
-	resp, err := s.httpClient.Do(req)
+	resp, err := s.httpClient.Get(s.baseURL)
 	if err != nil {
 		return fmt.Errorf("ошибка запроса к сайту колледжа: %w", err)
 	}
@@ -87,14 +82,12 @@ func (s *Service) ScrapeMainSchedule(ctx context.Context) error {
 	}
 
 	// Ищем все ссылки на Google Таблицы
-	// Уточняем селектор, чтобы найти именно таблицы расписания
 	var sheetLinks []struct {
-		URL       string
-		Text      string
-		Timestamp time.Time
+		URL  string
+		Text string
+		Date time.Time
 	}
 
-	// Ищем ссылки, которые могут содержать "расписание" или "schedule"
 	doc.Find("a[href*='docs.google.com/spreadsheets']").Each(func(i int, selection *goquery.Selection) {
 		href, exists := selection.Attr("href")
 		if exists {
@@ -107,23 +100,23 @@ func (s *Service) ScrapeMainSchedule(ctx context.Context) error {
 				// Пример: "Расписание с 16.06.2025 по 22.06.2025"
 				dateRegex := regexp.MustCompile(`(\d{2}\.\d{2}\.\d{4})`)
 				dates := dateRegex.FindAllString(text, -1)
-				var timestamp time.Time
+				var date time.Time
 				if len(dates) > 0 {
 					// Берем первую найденную дату как дату начала периода
-					timestamp, _ = time.Parse("02.01.2006", dates[0])
+					date, _ = time.Parse("02.01.2006", dates[0])
 				} else {
 					// Если дату не нашли, используем текущее время как fallback
-					timestamp = time.Now()
+					date = time.Now()
 				}
 
 				sheetLinks = append(sheetLinks, struct {
-					URL       string
-					Text      string
-					Timestamp time.Time
+					URL  string
+					Text string
+					Date time.Time
 				}{
-					URL:       href,
-					Text:      text,
-					Timestamp: timestamp,
+					URL:  href,
+					Text: text,
+					Date: date,
 				})
 			}
 		}
@@ -138,13 +131,13 @@ func (s *Service) ScrapeMainSchedule(ctx context.Context) error {
 				// Берем первую попавшуюся таблицу как запасной вариант
 				if len(sheetLinks) == 0 {
 					sheetLinks = append(sheetLinks, struct {
-						URL       string
-						Text      string
-						Timestamp time.Time
+						URL  string
+						Text string
+						Date time.Time
 					}{
-						URL:       href,
-						Text:      text,
-						Timestamp: time.Now(),
+						URL:  href,
+						Text: text,
+						Date: time.Now(),
 					})
 				}
 			}
@@ -160,42 +153,34 @@ func (s *Service) ScrapeMainSchedule(ctx context.Context) error {
 	// 3. Выбираем самую свежую таблицу (по дате в названии)
 	// Сортируем по времени по убыванию
 	sort.Slice(sheetLinks, func(i, j int) bool {
-		return sheetLinks[i].Timestamp.After(sheetLinks[j].Timestamp)
+		return sheetLinks[i].Date.After(sheetLinks[j].Date)
 	})
 
 	// Берем первую (самую свежую) таблицу
 	sheetURL := sheetLinks[0].URL
-	log.Printf("Выбрана таблица: %s (дата: %s)", sheetLinks[0].Text, sheetLinks[0].Timestamp.Format("02.01.2006"))
+	log.Printf("Выбрана таблица: %s (дата: %s)", sheetLinks[0].Text, sheetLinks[0].Date.Format("02.01.2006"))
 
 	// 4. Экспорт таблицы в CSV формат
-	// Проверим, можем ли мы экспортировать таблицу
-	// Для этого просто попробуем получить метаданные таблицы
-	log.Println("Проверяем доступность таблицы...")
-
-	// Простая проверка доступности таблицы
-	testResp, err := s.httpClient.Get(sheetURL)
-	if err != nil {
-		return fmt.Errorf("таблица недоступна: %w", err)
-	}
-	testResp.Body.Close()
-
-	if testResp.StatusCode != http.StatusOK {
-		return fmt.Errorf("таблица вернула статус %d", testResp.StatusCode)
-	}
-
 	log.Println("Экспортируем таблицу в CSV")
-	csvRecords, err := s.gsheetClient.ExportToCSV(ctx, sheetURL)
-	if err != nil {
-		return fmt.Errorf("ошибка экспорта таблицы в CSV: %w", err)
+
+	var csvRecords [][]string
+	var errExport error
+
+	// Используем старый метод экспорта через HTTP
+	csvRecords, errExport = s.gsheetClient.ExportToCSV(ctx, sheetURL)
+
+	if errExport != nil {
+		return fmt.Errorf("ошибка экспорта таблицы в CSV: %w", errExport)
 	}
 
 	log.Printf("Получено %d записей из таблицы", len(csvRecords))
 
 	// 5. Парсинг данных о расписании
 	log.Println("Парсим данные о расписании")
-	scheduleRecords, err := s.gsheetClient.ParseScheduleRecords(csvRecords)
-	if err != nil {
-		return fmt.Errorf("ошибка парсинга данных расписания: %w", err)
+
+	scheduleRecords, errParse := s.gsheetClient.ParseScheduleRecords(csvRecords)
+	if errParse != nil {
+		return fmt.Errorf("ошибка парсинга данных расписания: %w", errParse)
 	}
 
 	log.Printf("Успешно распаршено %d записей расписания", len(scheduleRecords))
@@ -225,19 +210,12 @@ func (s *Service) ScrapeMainSchedule(ctx context.Context) error {
 		IsActive:    true,
 	}
 
-	// В конце метода ScrapeMainSchedule, после создания снапшота:
 	err = s.scheduleRepo.CreateSnapshot(ctx, snapshot)
 	if err != nil {
 		return fmt.Errorf("ошибка создания снапшота расписания: %w", err)
 	}
 
 	log.Printf("Создан новый снапшот расписания: %s", snapshot.ID)
-
-	// Отправляем уведомление о новом расписании
-	if err := s.notificationService.SendNewScheduleNotification(ctx, snapshot); err != nil {
-		log.Printf("Ошибка отправки уведомления о новом расписании: %v", err)
-	}
-
 	log.Println("Парсинг основного расписания завершен успешно")
 	return nil
 }
@@ -315,18 +293,25 @@ func (s *Service) ScrapeScheduleChanges(ctx context.Context) error {
 
 	// 3. Экспорт таблицы изменений в CSV формат
 	log.Println("Экспортируем таблицу изменений в CSV")
-	csvRecords, err := s.gsheetClient.ExportToCSV(ctx, changesURL)
-	if err != nil {
+
+	var csvRecords [][]string
+	var errExport error
+
+	// Используем старый метод экспорта через HTTP
+	csvRecords, errExport = s.gsheetClient.ExportToCSV(ctx, changesURL)
+
+	if errExport != nil {
 		// Если таблица изменений не найдена или недоступна, это не критично
-		log.Printf("Предупреждение: не удалось экспортировать таблицу изменений: %v", err)
+		log.Printf("Предупреждение: не удалось экспортировать таблицу изменений: %v", errExport)
 		return nil
 	}
 
 	// 4. Парсинг данных об изменениях
 	log.Println("Парсим данные об изменениях")
-	changeRecords, err := s.parseChangeRecords(csvRecords)
-	if err != nil {
-		return fmt.Errorf("ошибка парсинга данных изменений: %w", err)
+
+	changeRecords, errParse := s.gsheetClient.ParseChangeRecords(csvRecords)
+	if errParse != nil {
+		return fmt.Errorf("ошибка парсинга данных изменений: %w", errParse)
 	}
 
 	log.Printf("Успешно распаршено %d записей изменений", len(changeRecords))
@@ -397,225 +382,6 @@ func (s *Service) ScrapeScheduleChanges(ctx context.Context) error {
 	return nil
 }
 
-// parseChangeRecords парсит записи об изменениях из CSV данных
-func (s *Service) parseChangeRecords(csvRecords [][]string) ([]ChangeRecord, error) {
-	if len(csvRecords) < 2 {
-		return nil, fmt.Errorf("недостаточно данных в CSV")
-	}
-
-	// Находим индексы колонок в заголовке
-	header := csvRecords[0]
-	columns := map[string]int{}
-	for i, col := range header {
-		columns[strings.TrimSpace(col)] = i
-	}
-
-	// Проверяем наличие обязательных колонок для изменений
-	// Колонки могут называться по-разному, поэтому ищем по ключевым словам
-	groupCol := -1
-	dateCol := -1
-	timeStartCol := -1
-	timeEndCol := -1
-	subjectCol := -1
-	teacherCol := -1
-	classroomCol := -1
-	changeTypeCol := -1
-	originalSubjectCol := -1
-
-	for colName, colIndex := range columns {
-		lowerColName := strings.ToLower(colName)
-		switch {
-		case strings.Contains(lowerColName, "группа"):
-			groupCol = colIndex
-		case strings.Contains(lowerColName, "дата"):
-			dateCol = colIndex
-		case strings.Contains(lowerColName, "время") && strings.Contains(lowerColName, "начало"):
-			timeStartCol = colIndex
-		case strings.Contains(lowerColName, "время") && strings.Contains(lowerColName, "окончание"):
-			timeEndCol = colIndex
-		case strings.Contains(lowerColName, "предмет"):
-			subjectCol = colIndex
-		case strings.Contains(lowerColName, "преподаватель"):
-			teacherCol = colIndex
-		case strings.Contains(lowerColName, "аудитория"):
-			classroomCol = colIndex
-		case strings.Contains(lowerColName, "тип") && (strings.Contains(lowerColName, "изменени") || strings.Contains(lowerColName, "замена")):
-			changeTypeCol = colIndex
-		case strings.Contains(lowerColName, "оригинальный") && strings.Contains(lowerColName, "предмет"):
-			originalSubjectCol = colIndex
-		}
-	}
-
-	// Проверяем, что нашли хотя бы основные колонки
-	if groupCol == -1 || dateCol == -1 || timeStartCol == -1 || subjectCol == -1 {
-		return nil, fmt.Errorf("не найдены обязательные колонки: Группа, Дата, Время начала, Предмет")
-	}
-
-	// Парсим данные
-	var records []ChangeRecord
-	for i := 1; i < len(csvRecords); i++ {
-		row := csvRecords[i]
-		if len(row) <= max(groupCol, dateCol, timeStartCol, subjectCol) {
-			// Пропускаем неполные строки
-			continue
-		}
-
-		// Парсим дату
-		dateStr := strings.TrimSpace(row[dateCol])
-		var date time.Time
-		var err error
-
-		// Пробуем разные форматы даты
-		for _, format := range []string{"02.01.2006", "2006-01-02", "01/02/2006"} {
-			date, err = time.Parse(format, dateStr)
-			if err == nil {
-				break
-			}
-		}
-
-		if err != nil {
-			log.Printf("Ошибка парсинга даты %s: %v", dateStr, err)
-			continue
-		}
-
-		// Определяем тип изменения по значению в ячейке или по умолчанию
-		changeType := "replacement" // По умолчанию замена
-		if changeTypeCol != -1 && changeTypeCol < len(row) {
-			changeTypeValue := strings.TrimSpace(row[changeTypeCol])
-			switch strings.ToLower(changeTypeValue) {
-			case "отмена", "cancelled", "cancellation":
-				changeType = "cancellation"
-			case "добавление", "added", "addition":
-				changeType = "addition"
-			case "замена", "replaced", "replacement":
-				changeType = "replacement"
-			}
-		}
-
-		record := ChangeRecord{
-			GroupName:       strings.TrimSpace(row[groupCol]),
-			Date:            date,
-			TimeStart:       strings.TrimSpace(row[timeStartCol]),
-			TimeEnd:         "",
-			Subject:         strings.TrimSpace(row[subjectCol]),
-			Teacher:         "",
-			Classroom:       "",
-			ChangeType:      changeType,
-			OriginalSubject: "",
-		}
-
-		// Заполняем необязательные поля, если они есть
-		if timeEndCol != -1 && timeEndCol < len(row) {
-			record.TimeEnd = strings.TrimSpace(row[timeEndCol])
-		}
-		if teacherCol != -1 && teacherCol < len(row) {
-			record.Teacher = strings.TrimSpace(row[teacherCol])
-		}
-		if classroomCol != -1 && classroomCol < len(row) {
-			record.Classroom = strings.TrimSpace(row[classroomCol])
-		}
-		if originalSubjectCol != -1 && originalSubjectCol < len(row) {
-			record.OriginalSubject = strings.TrimSpace(row[originalSubjectCol])
-		}
-
-		// Пропускаем пустые записи
-		if record.GroupName == "" || record.Subject == "" {
-			continue
-		}
-
-		records = append(records, record)
-	}
-
-	return records, nil
-}
-
-// Вспомогательная функция для нахождения максимума из нескольких int
-func max(values ...int) int {
-	if len(values) == 0 {
-		return 0
-	}
-	maxVal := values[0]
-	for _, v := range values[1:] {
-		if v > maxVal {
-			maxVal = v
-		}
-	}
-	return maxVal
-}
-
-// ChangeRecord представляет запись об изменении в расписании
-type ChangeRecord struct {
-	GroupName       string    `json:"group_name"`
-	Date            time.Time `json:"date"`
-	TimeStart       string    `json:"time_start"`
-	TimeEnd         string    `json:"time_end"`
-	Subject         string    `json:"subject"`
-	Teacher         string    `json:"teacher"`
-	Classroom       string    `json:"classroom"`
-	ChangeType      string    `json:"change_type"`
-	OriginalSubject string    `json:"original_subject"`
-}
-
-// StartPeriodicScraping запускает периодический парсинг
-// В соответствии с ТЗ: "Еженедельно (суббота ночью)" и "Каждые 10 минут"
-func (s *Service) StartPeriodicScraping(ctx context.Context) {
-	// Горутина для парсинга основного расписания (еженедельно)
-	go func() {
-		// Немедленный запуск для тестирования
-		log.Println("Немедленный запуск парсинга основного расписания")
-		if err := s.ScrapeMainSchedule(ctx); err != nil {
-			log.Printf("Ошибка при немедленном парсинге основного расписания: %v", err)
-		}
-
-		// Создаем таймер для еженедельного запуска (суббота ночью)
-		// Пока используем более частый интервал для тестирования
-		// В production будет 168 часов (неделя)
-		ticker := time.NewTicker(1 * time.Hour) // В production будет time.NewTicker(168 * time.Hour)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-ticker.C:
-				// Проверяем, что сегодня суббота
-				if time.Now().Weekday() == time.Saturday {
-					if err := s.ScrapeMainSchedule(ctx); err != nil {
-						log.Printf("Ошибка при парсинге основного расписания: %v", err)
-					}
-				}
-			case <-ctx.Done():
-				log.Println("Остановка периодического парсинга основного расписания")
-				return
-			}
-		}
-	}()
-
-	// Горутина для парсинга изменений (каждые 10 минут)
-	go func() {
-		// Немедленный запуск для тестирования
-		log.Println("Немедленный запуск парсинга изменений в расписании")
-		if err := s.ScrapeScheduleChanges(ctx); err != nil {
-			log.Printf("Ошибка при немедленном парсинге изменений в расписании: %v", err)
-		}
-
-		ticker := time.NewTicker(10 * time.Minute)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-ticker.C:
-				if err := s.ScrapeScheduleChanges(ctx); err != nil {
-					log.Printf("Ошибка при парсинге изменений в расписании: %v", err)
-				}
-			case <-ctx.Done():
-				log.Println("Остановка периодического парсинга изменений")
-				return
-			}
-		}
-	}()
-
-	log.Println("Периодический парсинг запущен")
-}
-
 // convertToScheduleData преобразует записи расписания в структуру данных для JSON
 func (s *Service) convertToScheduleData(records []gsheet.ScheduleRecord) *schedule.ScheduleData {
 	// Группируем записи по группам и дням недели
@@ -680,4 +446,52 @@ func (s *Service) calculateDataHash(data interface{}) (string, error) {
 
 	hash := md5.Sum(jsonData)
 	return hex.EncodeToString(hash[:]), nil
+}
+
+// StartPeriodicScraping запускает периодический парсинг
+// В соответствии с ТЗ: "Еженедельно (суббота ночью)" и "Каждые 10 минут"
+func (s *Service) StartPeriodicScraping(ctx context.Context) {
+	// Горутина для парсинга основного расписания (еженедельно)
+	go func() {
+		// Создаем таймер для еженедельного запуска (суббота ночью)
+		// Пока используем более частый интервал для тестирования
+		// В production будет 168 часов (неделя)
+		ticker := time.NewTicker(1 * time.Hour) // В production будет time.NewTicker(168 * time.Hour)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				// Проверяем, что сегодня суббота
+				if time.Now().Weekday() == time.Saturday {
+					if err := s.ScrapeMainSchedule(ctx); err != nil {
+						log.Printf("Ошибка при парсинге основного расписания: %v", err)
+					}
+				}
+			case <-ctx.Done():
+				log.Println("Остановка периодического парсинга основного расписания")
+				return
+			}
+		}
+	}()
+
+	// Горутина для парсинга изменений (каждые 10 минут)
+	go func() {
+		ticker := time.NewTicker(10 * time.Minute)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				if err := s.ScrapeScheduleChanges(ctx); err != nil {
+					log.Printf("Ошибка при парсинге изменений в расписании: %v", err)
+				}
+			case <-ctx.Done():
+				log.Println("Остановка периодического парсинга изменений")
+				return
+			}
+		}
+	}()
+
+	log.Println("Периодический парсинг запущен")
 }

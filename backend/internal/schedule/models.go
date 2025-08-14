@@ -58,16 +58,18 @@ type CurrentSchedule struct {
 	IsActive   bool      `db:"is_active"`
 }
 
-// Lesson представляет одну пару в расписании
-// Используется при парсинге данных из таблиц
-type Lesson struct {
-	GroupName string `json:"group_name" csv:"Группа"`
-	Subject   string `json:"subject" csv:"Предмет"`
-	Teacher   string `json:"teacher" csv:"Преподаватель"`
-	Classroom string `json:"classroom" csv:"Аудитория"`
-	TimeStart string `json:"time_start" csv:"Время начала"`
-	TimeEnd   string `json:"time_end" csv:"Время окончания"`
-	DayOfWeek string `json:"day_of_week" csv:"День недели"`
+// Notification представляет уведомление для пользователя
+// Соответствует таблице notifications из ТЗ
+type Notification struct {
+	ID           uuid.UUID `db:"id"`
+	UserID       uuid.UUID `db:"user_id"`
+	Title        string    `db:"title"`
+	Message      string    `db:"message"`
+	Type         string    `db:"type"`
+	RelatedGroup string    `db:"related_group"`
+	RelatedDate  time.Time `db:"related_date"`
+	IsRead       bool      `db:"is_read"`
+	CreatedAt    time.Time `db:"created_at"`
 }
 
 // ScheduleData представляет структуру данных расписания для JSON
@@ -81,6 +83,18 @@ type ScheduleData struct {
 type DaySchedule struct {
 	Day     string   `json:"day"`
 	Lessons []Lesson `json:"lessons"`
+}
+
+// Lesson представляет одну пару в расписании
+// Используется при парсинге данных из таблиц
+type Lesson struct {
+	GroupName string `json:"group_name"`
+	Subject   string `json:"subject"`
+	Teacher   string `json:"teacher"`
+	Classroom string `json:"classroom"`
+	TimeStart string `json:"time_start"`
+	TimeEnd   string `json:"time_end"`
+	DayOfWeek string `json:"day_of_week"`
 }
 
 // Value реализует интерфейс driver.Valuer для ScheduleData

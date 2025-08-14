@@ -1,3 +1,5 @@
+// Package users предоставляет бизнес-логику для работы с пользователями
+// В соответствии с ТЗ: "User Management Service - управление пользователями"
 package users
 
 import (
@@ -8,24 +10,24 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-// Service provides user business logic
+// Service предоставляет бизнес-логику для работы с пользователями
 type Service struct {
 	repo *Repository
 }
 
-// NewService creates a new user service
+// NewService создает новый сервис пользователей
 func NewService(repo *Repository) *Service {
 	return &Service{repo: repo}
 }
 
-// RegisterUserInput contains data needed to register a new user
+// RegisterUserInput содержит данные для регистрации нового пользователя
 type RegisterUserInput struct {
 	Email    string `json:"email" validate:"required,email"`
 	Password string `json:"password" validate:"required,min=6"`
 	Role     Role   `json:"role" validate:"required"`
 }
 
-// RegisterStudentInput contains data needed to register a student
+// RegisterStudentInput содержит данные для регистрации студента
 type RegisterStudentInput struct {
 	RegisterUserInput
 	GroupName     string `json:"group_name" validate:"required"`
@@ -34,7 +36,7 @@ type RegisterStudentInput struct {
 	StudentNumber string `json:"student_number"`
 }
 
-// RegisterTeacherInput contains data needed to register a teacher
+// RegisterTeacherInput содержит данные для регистрации преподавателя
 type RegisterTeacherInput struct {
 	RegisterUserInput
 	FullName   string `json:"full_name" validate:"required"`
@@ -43,21 +45,21 @@ type RegisterTeacherInput struct {
 	TeacherID  string `json:"teacher_id"`
 }
 
-// RegisterUser registers a new user
+// RegisterUser регистрирует нового пользователя
 func (s *Service) RegisterUser(ctx context.Context, input RegisterUserInput) (*User, error) {
-	// Check if user already exists
+	// Проверяем, что пользователя с таким email еще нет
 	_, err := s.repo.GetUserByEmail(ctx, input.Email)
 	if err == nil {
 		return nil, fmt.Errorf("user with email %s already exists", input.Email)
 	}
 
-	// Hash the password
+	// Хэшируем пароль
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
 	if err != nil {
 		return nil, fmt.Errorf("failed to hash password: %w", err)
 	}
 
-	// Create user
+	// Создаем пользователя
 	user := &User{
 		ID:       uuid.New(),
 		Email:    input.Email,
@@ -74,18 +76,18 @@ func (s *Service) RegisterUser(ctx context.Context, input RegisterUserInput) (*U
 	return user, nil
 }
 
-// RegisterStudent registers a new student
+// RegisterStudent регистрирует нового студента
 func (s *Service) RegisterStudent(ctx context.Context, input RegisterStudentInput) (*User, *Student, error) {
-	// Set role to student
+	// Устанавливаем роль студента
 	input.Role = RoleStudent
 
-	// Register user
+	// Регистрируем пользователя
 	user, err := s.RegisterUser(ctx, input.RegisterUserInput)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to register user: %w", err)
 	}
 
-	// Create student profile
+	// Создаем профиль студента
 	student := &Student{
 		UserID:        user.ID,
 		GroupName:     input.GroupName,
@@ -103,18 +105,18 @@ func (s *Service) RegisterStudent(ctx context.Context, input RegisterStudentInpu
 	return user, student, nil
 }
 
-// RegisterTeacher registers a new teacher
+// RegisterTeacher регистрирует нового преподавателя
 func (s *Service) RegisterTeacher(ctx context.Context, input RegisterTeacherInput) (*User, *Teacher, error) {
-	// Set role to teacher
+	// Устанавливаем роль преподавателя
 	input.Role = RoleTeacher
 
-	// Register user
+	// Регистрируем пользователя
 	user, err := s.RegisterUser(ctx, input.RegisterUserInput)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to register user: %w", err)
 	}
 
-	// Create teacher profile
+	// Создаем профиль преподавателя
 	teacher := &Teacher{
 		UserID:     user.ID,
 		FullName:   input.FullName,
@@ -132,30 +134,17 @@ func (s *Service) RegisterTeacher(ctx context.Context, input RegisterTeacherInpu
 	return user, teacher, nil
 }
 
-// AuthenticateUser authenticates a user by email and password
+// AuthenticateUser аутентифицирует пользователя по email и паролю
 func (s *Service) AuthenticateUser(ctx context.Context, email, password string) (*User, error) {
-	// Get user by email
-	user, err := s.repo.GetUserByEmail(ctx, email)
-	if err != nil {
-		return nil, fmt.Errorf("invalid credentials")
-	}
-
-	// Check if user is active
-	if !user.IsActive {
-		return nil, fmt.Errorf("user account is deactivated")
-	}
-
-	// Compare password hash
-	err = bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(password))
-	if err != nil {
-		return nil, fmt.Errorf("invalid credentials")
-	}
-
-	return user, nil
-
+	return s.repo.AuthenticateUser(ctx, email, password)
 }
 
-// GetUserByID retrieves a user by ID
+// GetUserByID получает пользователя по ID
 func (s *Service) GetUserByID(ctx context.Context, id uuid.UUID) (*User, error) {
 	return s.repo.GetUserByID(ctx, id)
+}
+
+// GetUserByEmail получает пользователя по email
+func (s *Service) GetUserByEmail(ctx context.Context, email string) (*User, error) {
+	return s.repo.GetUserByEmail(ctx, email)
 }
