@@ -6,6 +6,8 @@ import (
 	"context"
 	"encoding/csv"
 	"fmt"
+	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -40,8 +42,9 @@ type ScheduleRecord struct {
 // В соответствии с ТЗ: "Экспорт таблицы в CSV формат"
 func (c *Client) ExportToCSV(ctx context.Context, sheetURL string) ([][]string, error) {
 	// Преобразуем URL Google Таблицы в URL для экспорта в CSV
-	// Пример: https://docs.google.com/spreadsheets/d/ID/edit -> https://docs.google.com/spreadsheets/d/ID/export?format=csv
 	exportURL := c.convertToExportURL(sheetURL)
+
+	log.Printf("Экспортируем таблицу из %s (исходный URL: %s)", exportURL, sheetURL)
 
 	// Выполняем HTTP запрос
 	req, err := http.NewRequestWithContext(ctx, "GET", exportURL, nil)
@@ -49,13 +52,25 @@ func (c *Client) ExportToCSV(ctx context.Context, sheetURL string) ([][]string, 
 		return nil, fmt.Errorf("ошибка создания HTTP запроса: %w", err)
 	}
 
+	// Добавляем User-Agent для имитации браузера (иногда помогает)
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
+
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("ошибка выполнения HTTP запроса: %w", err)
 	}
 	defer resp.Body.Close()
 
+	// Проверяем статус ответа
 	if resp.StatusCode != http.StatusOK {
+		// Читаем тело ответа для отладки
+		body, _ := io.ReadAll(resp.Body)
+		log.Printf("Таблица вернула статус %d. Тело ответа: %s", resp.StatusCode, string(body))
+
+		// Если статус 404, логируем URL для отладки
+		if resp.StatusCode == http.StatusNotFound {
+			log.Printf("Таблица не найдена: %s", exportURL)
+		}
 		return nil, fmt.Errorf("Google Таблица вернула статус %d", resp.StatusCode)
 	}
 
@@ -71,17 +86,32 @@ func (c *Client) ExportToCSV(ctx context.Context, sheetURL string) ([][]string, 
 
 // convertToExportURL преобразует URL Google Таблицы в URL для экспорта
 func (c *Client) convertToExportURL(sheetURL string) string {
-	// Убираем параметры из URL если есть
+	// Логируем исходный URL для отладки
+	log.Printf("Исходный URL таблицы: %s", sheetURL)
+
+	// Убираем все параметры из URL если есть
 	if idx := strings.Index(sheetURL, "?"); idx != -1 {
 		sheetURL = sheetURL[:idx]
 	}
 
-	// Добавляем параметры для экспорта в CSV
-	if !strings.HasSuffix(sheetURL, "/") {
-		sheetURL += "/"
+	// Заменяем /edit на /export
+	if strings.HasSuffix(sheetURL, "/edit") {
+		sheetURL = sheetURL[:len(sheetURL)-5] // Убираем "/edit"
+		sheetURL += "/export"
+	} else if strings.Contains(sheetURL, "/d/") {
+		// Если URL содержит ID таблицы, но не заканчивается на /edit
+		// Добавляем /export
+		if !strings.HasSuffix(sheetURL, "/") {
+			sheetURL += "/"
+		}
+		sheetURL += "export"
 	}
 
-	return sheetURL + "export?format=csv"
+	// Добавляем параметры для экспорта в CSV
+	exportURL := sheetURL + "?format=csv&gid=0"
+	log.Printf("Сформированный URL для экспорта: %s", exportURL)
+
+	return exportURL
 }
 
 // ParseScheduleRecords парсит записи расписания из CSV данных

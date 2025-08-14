@@ -61,6 +61,7 @@ type Notification struct {
 }
 
 // SendScheduleChangeNotification отправляет уведомление об изменении в расписании
+// В соответствии с ТЗ: "Отправка уведомлений"
 func (s *Service) SendScheduleChangeNotification(ctx context.Context, change *schedule.ScheduleChange) error {
 	log.Printf("Отправляем уведомление об изменении в расписании для группы %s", change.GroupName)
 
@@ -91,6 +92,7 @@ func (s *Service) SendScheduleChangeNotification(ctx context.Context, change *sc
 			RelatedGroup: change.GroupName,
 			RelatedDate:  change.Date,
 			IsRead:       false,
+			CreatedAt:    time.Now(),
 		}
 
 		// Создаем уведомление в БД
@@ -101,6 +103,12 @@ func (s *Service) SendScheduleChangeNotification(ctx context.Context, change *sc
 		}
 
 		log.Printf("Создано уведомление для студента %s: %s", studentID, title)
+
+		// Отправляем push-уведомление
+		if err := s.sendPushNotification(ctx, notification); err != nil {
+			log.Printf("Ошибка отправки push уведомления студенту %s: %v", studentID, err)
+			// Не возвращаем ошибку, чтобы не прерывать отправку другим студентам
+		}
 	}
 
 	if len(notificationErrors) > 0 {
@@ -109,23 +117,6 @@ func (s *Service) SendScheduleChangeNotification(ctx context.Context, change *sc
 	}
 
 	log.Printf("Уведомление об изменении отправлено для группы %s (%d студентов)", change.GroupName, len(studentIDs))
-	return nil
-}
-
-// SendNewScheduleNotification отправляет уведомление о новом основном расписании
-func (s *Service) SendNewScheduleNotification(ctx context.Context, snapshot *schedule.ScheduleSnapshot) error {
-	log.Println("Отправляем уведомление о новом основном расписании")
-
-	title := "Обновлено расписание"
-	message := fmt.Sprintf("Доступно новое расписание на период с %s по %s",
-		snapshot.PeriodStart.Format("02.01.2006"),
-		snapshot.PeriodEnd.Format("02.01.2006"))
-
-	// TODO: Получить всех студентов и преподавателей
-	// TODO: Создать уведомления для каждого
-
-	log.Printf("Уведомление: %s - %s", title, message)
-	log.Println("Уведомление о новом расписании отправлено")
 	return nil
 }
 
@@ -154,12 +145,97 @@ func (s *Service) formatChangeMessage(change *schedule.ScheduleChange) (string, 
 
 // GetUnreadNotifications получает непрочитанные уведомления для пользователя
 func (s *Service) GetUnreadNotifications(ctx context.Context, userID uuid.UUID) ([]Notification, error) {
-	// TODO: Реализовать получение непрочитанных уведомлений из БД
-	return []Notification{}, nil
+	return s.notificationRepo.GetUnreadNotifications(ctx, userID)
 }
 
 // MarkAsRead помечает уведомление как прочитанное
 func (s *Service) MarkAsRead(ctx context.Context, notificationID uuid.UUID) error {
-	// TODO: Реализовать пометку уведомления как прочитанного в БД
+	return s.notificationRepo.MarkAsRead(ctx, notificationID)
+}
+
+// sendPushNotification отправляет push-уведомление
+// В соответствии с ТЗ: "Получение уведомлений об изменениях"
+func (s *Service) sendPushNotification(ctx context.Context, notification *Notification) error {
+	// TODO: Здесь будет реальная логика отправки push-уведомлений
+	// Например, с использованием FCM (Firebase Cloud Messaging) или APNs (Apple Push Notification Service)
+
+	// Пока просто логируем отправку
+	log.Printf("Отправка push уведомления пользователю %s: %s - %s",
+		notification.UserID, notification.Title, notification.Message)
+
+	// В реальной реализации здесь будет код для отправки через FCM/APNs
+	// Например:
+	// fcmClient := s.getFCMClient()
+	// err := fcmClient.SendMessageToDevice(deviceToken, &fcm.Message{
+	//     Title: notification.Title,
+	//     Body:  notification.Message,
+	//     Data: map[string]string{
+	//         "notification_id": notification.ID.String(),
+	//         "type":          string(notification.Type),
+	//     },
+	// })
+	// if err != nil {
+	//     return fmt.Errorf("ошибка отправки push уведомления: %w", err)
+	// }
+
+	return nil
+}
+
+// SendNewScheduleNotification отправляет уведомление о новом основном расписании
+// В соответствии с ТЗ: "Новое основное расписание: ... Получатели: Все студенты и преподаватели"
+func (s *Service) SendNewScheduleNotification(ctx context.Context, snapshot *schedule.ScheduleSnapshot) error {
+	log.Println("Отправляем уведомление о новом основном расписании")
+
+	title := "Обновлено расписание"
+	message := fmt.Sprintf("Доступно новое расписание на период с %s по %s",
+		snapshot.PeriodStart.Format("02.01.2006"),
+		snapshot.PeriodEnd.Format("02.01.2006"))
+
+	// TODO: Получить всех студентов и преподавателей
+	// Пока используем заглушку
+	var allUserIDs []uuid.UUID
+	// allUserIDs = append(allUserIDs, studentIDs...)
+	// allUserIDs = append(allUserIDs, teacherIDs...)
+
+	// Если нет пользователей, выходим
+	if len(allUserIDs) == 0 {
+		log.Println("Нет пользователей для отправки уведомления о новом расписании")
+		return nil
+	}
+
+	// Создаем уведомления для каждого пользователя
+	var notificationErrors []error
+	for _, userID := range allUserIDs {
+		notification := &Notification{
+			ID:          uuid.New(),
+			UserID:      userID,
+			Title:       title,
+			Message:     message,
+			Type:        NotificationTypeSystem,
+			RelatedDate: snapshot.PeriodStart,
+			IsRead:      false,
+			CreatedAt:   time.Now(),
+		}
+
+		// Создаем уведомление в БД
+		err := s.notificationRepo.CreateNotification(ctx, notification)
+		if err != nil {
+			notificationErrors = append(notificationErrors, fmt.Errorf("ошибка создания уведомления для пользователя %s: %w", userID, err))
+			continue
+		}
+
+		log.Printf("Создано уведомление о новом расписании для пользователя %s", userID)
+
+		// Отправляем push-уведомление
+		if err := s.sendPushNotification(ctx, notification); err != nil {
+			log.Printf("Ошибка отправки push уведомления пользователю %s: %v", userID, err)
+		}
+	}
+
+	if len(notificationErrors) > 0 {
+		return fmt.Errorf("ошибки при создании уведомлений: %v", notificationErrors[0])
+	}
+
+	log.Printf("Уведомление о новом расписании отправлено (%d пользователей)", len(allUserIDs))
 	return nil
 }

@@ -241,3 +241,132 @@ func (r *Repository) GetScheduleSnapshotByID(ctx context.Context, id uuid.UUID) 
 
 	return snapshot, nil
 }
+
+// BeginTx начинает транзакцию
+func (r *Repository) BeginTx(ctx context.Context) (*sql.Tx, error) {
+	return r.db.BeginTx(ctx, nil)
+}
+
+// GetCurrentScheduleEntry получает запись из current_schedule по группе, дате и времени начала
+// Принимает *sql.Tx для работы в рамках транзакции
+func (r *Repository) GetCurrentScheduleEntry(tx *sql.Tx, groupName string, date time.Time, timeStart string) (*CurrentSchedule, error) {
+	query := `
+        SELECT id, group_name, date, time_start, time_end, subject, teacher, classroom, source_type, source_id, is_active
+        FROM current_schedule
+        WHERE group_name = $1 AND date = $2 AND time_start = $3 AND is_active = true`
+
+	entry := &CurrentSchedule{}
+	// Используем tx.QueryRow вместо r.db.QueryRowContext
+	err := tx.QueryRow(query, groupName, date, timeStart).Scan(
+		&entry.ID,
+		&entry.GroupName,
+		&entry.Date,
+		&entry.TimeStart,
+		&entry.TimeEnd,
+		&entry.Subject,
+		&entry.Teacher,
+		&entry.Classroom,
+		&entry.SourceType,
+		&entry.SourceID,
+		&entry.IsActive,
+	)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return entry, nil
+}
+
+// UpdateCurrentScheduleEntry обновляет запись в current_schedule
+// Принимает *sql.Tx для работы в рамках транзакции
+func (r *Repository) UpdateCurrentScheduleEntry(tx *sql.Tx, entry *CurrentSchedule) error {
+	query := `
+        UPDATE current_schedule
+        SET subject = $1, teacher = $2, classroom = $3, source_type = $4, source_id = $5, is_active = $6
+        WHERE id = $7`
+
+	// Используем tx.Exec вместо r.db.ExecContext
+	_, err := tx.Exec(query,
+		entry.Subject,
+		entry.Teacher,
+		entry.Classroom,
+		entry.SourceType,
+		entry.SourceID,
+		entry.IsActive,
+		entry.ID,
+	)
+
+	return err
+}
+
+// CreateCurrentScheduleEntry создает новую запись в current_schedule
+// Принимает *sql.Tx для работы в рамках транзакции
+func (r *Repository) CreateCurrentScheduleEntry(tx *sql.Tx, entry *CurrentSchedule) error {
+	query := `
+        INSERT INTO current_schedule 
+        (id, group_name, date, time_start, time_end, subject, teacher, classroom, source_type, source_id, is_active)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`
+
+	// Используем tx.Exec вместо r.db.ExecContext
+	_, err := tx.Exec(query,
+		entry.ID,
+		entry.GroupName,
+		entry.Date,
+		entry.TimeStart,
+		entry.TimeEnd,
+		entry.Subject,
+		entry.Teacher,
+		entry.Classroom,
+		entry.SourceType,
+		entry.SourceID,
+		entry.IsActive,
+	)
+
+	return err
+}
+
+// GetChangesForGroup получает изменения для группы на определенную дату
+func (r *Repository) GetChangesForGroup(ctx context.Context, groupName string, date time.Time) ([]ScheduleChange, error) {
+	query := `
+		SELECT id, snapshot_id, group_name, date, time_start, time_end, subject, teacher, classroom, change_type, original_subject, created_at, is_active
+		FROM schedule_changes
+		WHERE group_name = $1 AND date = $2 AND is_active = true
+		ORDER BY time_start`
+
+	rows, err := r.db.QueryContext(ctx, query, groupName, date)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get changes for group: %w", err)
+	}
+	defer rows.Close()
+
+	var changes []ScheduleChange
+	for rows.Next() {
+		var change ScheduleChange
+		err := rows.Scan(
+			&change.ID,
+			&change.SnapshotID,
+			&change.GroupName,
+			&change.Date,
+			&change.TimeStart,
+			&change.TimeEnd,
+			&change.Subject,
+			&change.Teacher,
+			&change.Classroom,
+			&change.ChangeType,
+			&change.OriginalSubject,
+			&change.CreatedAt,
+			&change.IsActive,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan change: %w", err)
+		}
+		changes = append(changes, change)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating rows: %w", err)
+	}
+
+	return changes, nil
+}
