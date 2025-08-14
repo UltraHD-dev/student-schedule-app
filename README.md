@@ -139,7 +139,6 @@ docker compose down
 ```
 docker compose down -v
 ```
-```
 
 
 📊 Структура базы данных 
