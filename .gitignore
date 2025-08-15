@@ -63,6 +63,7 @@ go.work
 **/android/local.properties
 **/android/app/src/profile/
 **/android/app/src/debug/
+**/backend/configs/config.yaml
 
 # Logs
 *.log

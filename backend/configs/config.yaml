@@ -1,20 +1,29 @@
-# Конфигурация для локальной разработки
+# ~/codes/projects/student-schedule-app/backend/configs/config.yaml
 server:
-  port: 8080
-  host: "0.0.0.0"
+  port: 50051
 
 database:
-  host: "localhost"
+  host: localhost
   port: 5432
-  user: "student_user"
-  password: "student_pass"
-  dbname: "student_schedule_dev"
-  sslmode: "disable"
+  user: student_user
+  password: student_pass
+  dbname: student_schedule_dev
+  sslmode: disable
+
+redis:
+  addr: localhost:6379
+
+scraper:
+  base_url: "https://kcpt72.ru/schedule/"
+  timeout: 30s
+  # Список gid листов основного расписания
+  main_schedule_gids: 
+    - 1891807071
+    # Добавьте сюда другие gid, найденные вручную
+    # - 1234567890
+  # gid листа изменений (по умолчанию 0)
+  changes_gid: 0
 
 jwt:
-  secret: "your-super-secret-jwt-key-change-in-production"
-  expiration_hours: 24
-
-logging:
-  level: "debug"
-  format: "text"
+  secret: "NL4JYOtuA8kOiIrJSuAApUAVjZ8tlTIdOaQZ77TTnY4="
+  expiration: 24h

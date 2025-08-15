@@ -107,7 +107,6 @@ func (s *Service) SendScheduleChangeNotification(ctx context.Context, change *sc
 		// Отправляем push-уведомление
 		if err := s.sendPushNotification(ctx, notification); err != nil {
 			log.Printf("Ошибка отправки push уведомления студенту %s: %v", studentID, err)
-			// Не возвращаем ошибку, чтобы не прерывать отправку другим студентам
 		}
 	}
 
@@ -117,6 +116,57 @@ func (s *Service) SendScheduleChangeNotification(ctx context.Context, change *sc
 	}
 
 	log.Printf("Уведомление об изменении отправлено для группы %s (%d студентов)", change.GroupName, len(studentIDs))
+	return nil
+}
+
+// formatChangeMessage форматирует сообщение уведомления об изменении
+func (s *Service) formatChangeMessage(change *schedule.ScheduleChange) (string, string) {
+	title := fmt.Sprintf("Изменения в расписании на %s", change.Date.Format("02.01.2006"))
+
+	var message string
+	switch change.ChangeType {
+	case "replacement":
+		message = fmt.Sprintf("Ваша пара по %s (%s) перенесена с %s на %s. Новый кабинет: %s",
+			change.Subject, change.Teacher, change.OriginalSubject, change.TimeStart, change.Classroom)
+	case "cancellation":
+		message = fmt.Sprintf("Пара по %s (%s) в %s отменена",
+			change.Subject, change.Teacher, change.TimeStart)
+	case "addition":
+		message = fmt.Sprintf("Добавлена новая пара по %s (%s) в %s. Кабинет: %s",
+			change.Subject, change.Teacher, change.TimeStart, change.Classroom)
+	default:
+		message = fmt.Sprintf("Изменения в расписании: %s (%s) в %s. Кабинет: %s",
+			change.Subject, change.Teacher, change.TimeStart, change.Classroom)
+	}
+
+	return title, message
+}
+
+// sendPushNotification отправляет push-уведомление
+// В соответствии с ТЗ: "Получение уведомлений об изменениях"
+func (s *Service) sendPushNotification(ctx context.Context, notification *Notification) error {
+	// TODO: Здесь будет реальная логика отправки push-уведомлений
+	// Например, с использованием FCM (Firebase Cloud Messaging) или APNs (Apple Push Notification Service)
+
+	// Пока просто логируем отправку
+	log.Printf("Отправка push уведомления пользователю %s: %s - %s",
+		notification.UserID, notification.Title, notification.Message)
+
+	// В реальной реализации здесь будет код для отправки через FCM/APNs
+	// Например:
+	// fcmClient := s.getFCMClient()
+	// err := fcmClient.SendMessageToDevice(deviceToken, &fcm.Message{
+	//     Title: notification.Title,
+	//     Body:  notification.Message,
+	//     Data: map[string]string{
+	//         "notification_id": notification.ID.String(),
+	//         "type":          string(notification.Type),
+	//     },
+	// })
+	// if err != nil {
+	//     return fmt.Errorf("ошибка отправки push уведомления: %w", err)
+	// }
+
 	return nil
 }
 
@@ -180,58 +230,7 @@ func (s *Service) SendNewScheduleNotification(ctx context.Context, snapshot *sch
 	return nil
 }
 
-// formatChangeMessage форматирует сообщение уведомления об изменении
-func (s *Service) formatChangeMessage(change *schedule.ScheduleChange) (string, string) {
-	title := fmt.Sprintf("Изменения в расписании на %s", change.Date.Format("02.01.2006"))
-
-	var message string
-	switch change.ChangeType {
-	case "replacement":
-		message = fmt.Sprintf("Ваша пара по %s (%s) перенесена с %s на %s. Новый кабинет: %s",
-			change.Subject, change.Teacher, change.OriginalSubject, change.TimeStart, change.Classroom)
-	case "cancellation":
-		message = fmt.Sprintf("Пара по %s (%s) в %s отменена",
-			change.Subject, change.Teacher, change.TimeStart)
-	case "addition":
-		message = fmt.Sprintf("Добавлена новая пара по %s (%s) в %s. Кабинет: %s",
-			change.Subject, change.Teacher, change.TimeStart, change.Classroom)
-	default:
-		message = fmt.Sprintf("Изменения в расписании: %s (%s) в %s. Кабинет: %s",
-			change.Subject, change.Teacher, change.TimeStart, change.Classroom)
-	}
-
-	return title, message
-}
-
 // MarkAsRead помечает уведомление как прочитанное
 func (s *Service) MarkAsRead(ctx context.Context, notificationID uuid.UUID) error {
 	return s.notificationRepo.MarkAsRead(ctx, notificationID)
-}
-
-// sendPushNotification отправляет push-уведомление
-// В соответствии с ТЗ: "Получение уведомлений об изменениях"
-func (s *Service) sendPushNotification(ctx context.Context, notification *Notification) error {
-	// TODO: Здесь будет реальная логика отправки push-уведомлений
-	// Например, с использованием FCM (Firebase Cloud Messaging) или APNs (Apple Push Notification Service)
-
-	// Пока просто логируем отправку
-	log.Printf("Отправка push уведомления пользователю %s: %s - %s",
-		notification.UserID, notification.Title, notification.Message)
-
-	// В реальной реализации здесь будет код для отправки через FCM/APNs
-	// Например:
-	// fcmClient := s.getFCMClient()
-	// err := fcmClient.SendMessageToDevice(deviceToken, &fcm.Message{
-	//     Title: notification.Title,
-	//     Body:  notification.Message,
-	//     Data: map[string]string{
-	//         "notification_id": notification.ID.String(),
-	//         "type":          string(notification.Type),
-	//     },
-	// })
-	// if err != nil {
-	//     return fmt.Errorf("ошибка отправки push уведомления: %w", err)
-	// }
-
-	return nil
 }

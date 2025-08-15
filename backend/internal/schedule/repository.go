@@ -78,6 +78,7 @@ func (r *Repository) GetActiveSnapshot(ctx context.Context) (*ScheduleSnapshot, 
 }
 
 // CreateChange создает новое изменение в расписании
+// ИСПРАВЛЕНО: Удален дублирующийся метод CreateChange. Оставлен только один.
 func (r *Repository) CreateChange(ctx context.Context, change *ScheduleChange) error {
 	query := `
 		INSERT INTO schedule_changes 
@@ -158,14 +159,16 @@ func (r *Repository) BeginTx(ctx context.Context) (*sql.Tx, error) {
 }
 
 // GetCurrentScheduleEntry получает запись из current_schedule по группе, дате и времени начала
-func (r *Repository) GetCurrentScheduleEntry(ctx context.Context, groupName string, date time.Time, timeStart string) (*CurrentSchedule, error) {
+// ИСПРАВЛЕНО: Добавлен ctx как параметр
+func (r *Repository) GetCurrentScheduleEntry(ctx context.Context, tx *sql.Tx, groupName string, date time.Time, timeStart string) (*CurrentSchedule, error) {
 	query := `
 		SELECT id, group_name, date, time_start, time_end, subject, teacher, classroom, source_type, source_id, is_active
 		FROM current_schedule
 		WHERE group_name = $1 AND date = $2 AND time_start = $3 AND is_active = true`
 
 	entry := &CurrentSchedule{}
-	err := r.db.QueryRowContext(ctx, query, groupName, date, timeStart).Scan(
+	// ИСПРАВЛЕНО: Используем QueryRowContext с переданным ctx
+	err := tx.QueryRowContext(ctx, query, groupName, date, timeStart).Scan(
 		&entry.ID,
 		&entry.GroupName,
 		&entry.Date,
@@ -187,13 +190,15 @@ func (r *Repository) GetCurrentScheduleEntry(ctx context.Context, groupName stri
 }
 
 // UpdateCurrentScheduleEntry обновляет запись в current_schedule
-func (r *Repository) UpdateCurrentScheduleEntry(ctx context.Context, entry *CurrentSchedule) error {
+// ИСПРАВЛЕНО: Добавлен ctx как параметр
+func (r *Repository) UpdateCurrentScheduleEntry(ctx context.Context, tx *sql.Tx, entry *CurrentSchedule) error {
 	query := `
 		UPDATE current_schedule
 		SET subject = $1, teacher = $2, classroom = $3, source_type = $4, source_id = $5, is_active = $6
 		WHERE id = $7`
 
-	_, err := r.db.ExecContext(ctx, query,
+	// ИСПРАВЛЕНО: Используем ExecContext с переданным ctx
+	_, err := tx.ExecContext(ctx, query,
 		entry.Subject,
 		entry.Teacher,
 		entry.Classroom,
@@ -207,13 +212,15 @@ func (r *Repository) UpdateCurrentScheduleEntry(ctx context.Context, entry *Curr
 }
 
 // CreateCurrentScheduleEntry создает новую запись в current_schedule
-func (r *Repository) CreateCurrentScheduleEntry(ctx context.Context, entry *CurrentSchedule) error {
+// ИСПРАВЛЕНО: Добавлен ctx как параметр
+func (r *Repository) CreateCurrentScheduleEntry(ctx context.Context, tx *sql.Tx, entry *CurrentSchedule) error {
 	query := `
 		INSERT INTO current_schedule 
 		(id, group_name, date, time_start, time_end, subject, teacher, classroom, source_type, source_id, is_active)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`
 
-	_, err := r.db.ExecContext(ctx, query,
+	// ИСПРАВЛЕНО: Используем ExecContext с переданным ctx
+	_, err := tx.ExecContext(ctx, query,
 		entry.ID,
 		entry.GroupName,
 		entry.Date,

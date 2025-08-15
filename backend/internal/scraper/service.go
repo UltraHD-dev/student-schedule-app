@@ -19,42 +19,62 @@ import (
 	"github.com/Ultrahd-dev/student-schedule-app/backend/internal/changes"
 	"github.com/Ultrahd-dev/student-schedule-app/backend/internal/notifications"
 	"github.com/Ultrahd-dev/student-schedule-app/backend/internal/schedule"
-	"github.com/Ultrahd-dev/student-schedule-app/backend/internal/scraper/gsheet"
-	"github.com/Ultrahd-dev/student-schedule-app/backend/internal/scraper/gsheetapi"
+	gsheet "github.com/Ultrahd-dev/student-schedule-app/backend/internal/scraper/gsheets" // Обновляем импорт
 	"github.com/google/uuid"
 )
 
 // Service предоставляет функции для парсинга данных с сайта колледжа
 type Service struct {
-	httpClient          *http.Client
+	httpClient *http.Client
+	// gsheetClient теперь принимает список gid в конструкторе
 	gsheetClient        *gsheet.Client
-	gsheetAPIClient     *gsheetapi.Client
 	scheduleRepo        *schedule.Repository
 	notificationService *notifications.Service
 	changeService       *changes.Service
 	baseURL             string
 	lastChangeHash      string // Хэш последних данных об изменениях
+	// Добавляем список gid для основного расписания
+	mainScheduleGIDs []int64
+	// Добавляем gid для таблицы изменений (по умолчанию 0)
+	changesGID int64
 }
 
 // Config конфигурация scraper сервиса
 type Config struct {
 	BaseURL string
 	Timeout time.Duration
+	// Добавляем поля для конфигурации gid
+	MainScheduleGIDs []int64 `json:"main_schedule_gids"` // Список gid листов основного расписания
+	ChangesGID       int64   `json:"changes_gid"`        // gid листа изменений (по умолчанию 0)
 }
 
 // NewService создает новый scraper сервис
 func NewService(config Config, scheduleRepo *schedule.Repository,
 	notificationService *notifications.Service, changeService *changes.Service) *Service {
+
+	// Устанавливаем значения по умолчанию, если не заданы в конфиге
+	mainGIDs := config.MainScheduleGIDs
+	if mainGIDs == nil {
+		mainGIDs = []int64{} // Пустой список по умолчанию
+	}
+
+	changesGID := config.ChangesGID
+	if changesGID == 0 {
+		changesGID = 0 // По умолчанию 0
+	}
+
 	return &Service{
 		httpClient: &http.Client{
 			Timeout: config.Timeout,
 		},
-		gsheetClient:        gsheet.NewClient(),
-		gsheetAPIClient:     nil, // Пока не используем Google Sheets API клиент
+		// Передаем список gid в конструктор клиента
+		gsheetClient:        gsheet.NewClient(mainGIDs),
 		scheduleRepo:        scheduleRepo,
 		notificationService: notificationService,
 		changeService:       changeService,
 		baseURL:             config.BaseURL,
+		mainScheduleGIDs:    mainGIDs,   // Сохраняем для логирования
+		changesGID:          changesGID, // Сохраняем для логирования
 	}
 }
 
@@ -162,15 +182,10 @@ func (s *Service) ScrapeMainSchedule(ctx context.Context) error {
 
 	// 4. Экспорт таблицы в CSV формат
 	log.Println("Экспортируем таблицу в CSV")
-
-	var csvRecords [][]string
-	var errExport error
-
-	// Используем старый метод экспорта через HTTP
-	csvRecords, errExport = s.gsheetClient.ExportToCSV(ctx, sheetURL)
-
-	if errExport != nil {
-		return fmt.Errorf("ошибка экспорта таблицы в CSV: %w", errExport)
+	// Используем новый метод для основного расписания
+	csvRecords, err := s.gsheetClient.ExportToCSVMainSchedule(ctx, sheetURL)
+	if err != nil {
+		return fmt.Errorf("ошибка экспорта таблицы в CSV: %w", err)
 	}
 
 	log.Printf("Получено %d записей из таблицы", len(csvRecords))
@@ -178,9 +193,9 @@ func (s *Service) ScrapeMainSchedule(ctx context.Context) error {
 	// 5. Парсинг данных о расписании
 	log.Println("Парсим данные о расписании")
 
-	scheduleRecords, errParse := s.gsheetClient.ParseScheduleRecords(csvRecords)
-	if errParse != nil {
-		return fmt.Errorf("ошибка парсинга данных расписания: %w", errParse)
+	scheduleRecords, err := s.gsheetClient.ParseScheduleRecords(csvRecords)
+	if err != nil {
+		return fmt.Errorf("ошибка парсинга данных расписания: %w", err)
 	}
 
 	log.Printf("Успешно распаршено %d записей расписания", len(scheduleRecords))
@@ -262,8 +277,9 @@ func (s *Service) ScrapeScheduleChanges(ctx context.Context) error {
 			text := strings.ToLower(selection.Text())
 			// Проверяем, содержит ли текст ключевые слова
 			if strings.Contains(text, "изменени") || strings.Contains(text, "замены") || strings.Contains(text, "замена") {
-				changesURL = href
-				log.Printf("Найдена ссылка на таблицу изменений: %s", href)
+				// ИСПРАВЛЕНО: Добавляем TrimSpace к href
+				changesURL = strings.TrimSpace(href)
+				log.Printf("Найдена ссылка на таблицу изменений: %s", changesURL)
 				return // Прерываем перебор после первой найденной ссылки
 			}
 		}
@@ -274,10 +290,12 @@ func (s *Service) ScrapeScheduleChanges(ctx context.Context) error {
 		doc.Find("a[href*='docs.google.com/spreadsheets']").Each(func(i int, selection *goquery.Selection) {
 			href, exists := selection.Attr("href")
 			if exists {
+				// ИСПРАВЛЕНО: Добавляем TrimSpace к href
+				hrefTrimmed := strings.TrimSpace(href)
 				// Берем первую попавшуюся таблицу как запасной вариант
 				if changesURL == "" {
-					changesURL = href
-					log.Printf("Используем первую найденную таблицу как таблицу изменений: %s", href)
+					changesURL = hrefTrimmed
+					log.Printf("Используем первую найденную таблицу как таблицу изменений: %s", changesURL)
 				}
 			}
 		})
@@ -297,14 +315,15 @@ func (s *Service) ScrapeScheduleChanges(ctx context.Context) error {
 	var csvRecords [][]string
 	var errExport error
 
-	// Используем старый метод экспорта через HTTP
-	csvRecords, errExport = s.gsheetClient.ExportToCSV(ctx, changesURL)
-
+	// Используем новый метод для экспорта изменений с указанным gid
+	csvRecords, errExport = s.gsheetClient.ExportToCSVChanges(ctx, changesURL, s.changesGID)
 	if errExport != nil {
 		// Если таблица изменений не найдена или недоступна, это не критично
 		log.Printf("Предупреждение: не удалось экспортировать таблицу изменений: %v", errExport)
 		return nil
 	}
+
+	log.Printf("Получено %d записей из таблицы изменений", len(csvRecords))
 
 	// 4. Парсинг данных об изменениях
 	log.Println("Парсим данные об изменениях")

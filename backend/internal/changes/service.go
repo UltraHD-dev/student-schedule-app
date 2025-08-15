@@ -51,15 +51,22 @@ func (s *Service) ApplyChanges(ctx context.Context, changes []schedule.ScheduleC
 	if err != nil {
 		return fmt.Errorf("ошибка начала транзакции: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() {
+		// Откатываем транзакцию в случае ошибки
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
 
 	// Для каждого изменения:
 	appliedCount := 0
 	for _, change := range changes {
 		// 1. Обновляем current_schedule
-		err := s.updateCurrentSchedule(tx, &change)
+		// ИСПРАВЛЕНО: Передаем ctx в updateCurrentSchedule
+		err := s.updateCurrentSchedule(ctx, tx, &change)
 		if err != nil {
 			log.Printf("Ошибка обновления current_schedule для изменения %s: %v", change.ID, err)
+			// Не возвращаем ошибку, продолжаем применять другие изменения
 			continue
 		}
 
@@ -77,9 +84,11 @@ func (s *Service) ApplyChanges(ctx context.Context, changes []schedule.ScheduleC
 }
 
 // updateCurrentSchedule обновляет запись в current_schedule на основе изменения
-func (s *Service) updateCurrentSchedule(tx *sql.Tx, change *schedule.ScheduleChange) error {
+// ИСПРАВЛЕНО: Добавлен ctx как первый параметр, удалён дубликат
+func (s *Service) updateCurrentSchedule(ctx context.Context, tx *sql.Tx, change *schedule.ScheduleChange) error {
 	// 1. Проверяем, существует ли уже запись в current_schedule для этой пары
-	existing, err := s.scheduleRepo.GetCurrentScheduleEntry(context.Background(), change.GroupName, change.Date, change.TimeStart)
+	// ИСПРАВЛЕНО: Передаем ctx в вызовы методов репозитория
+	existing, err := s.scheduleRepo.GetCurrentScheduleEntry(ctx, tx, change.GroupName, change.Date, change.TimeStart)
 	if err != nil && err != sql.ErrNoRows {
 		return fmt.Errorf("ошибка получения существующей записи: %w", err)
 	}
@@ -93,7 +102,8 @@ func (s *Service) updateCurrentSchedule(tx *sql.Tx, change *schedule.ScheduleCha
 		existing.SourceType = "change"
 		existing.SourceID = change.ID
 
-		err = s.scheduleRepo.UpdateCurrentScheduleEntry(context.Background(), existing)
+		// ИСПРАВЛЕНО: Передаем ctx
+		err = s.scheduleRepo.UpdateCurrentScheduleEntry(ctx, tx, existing)
 		if err != nil {
 			return fmt.Errorf("ошибка обновления существующей записи: %w", err)
 		}
@@ -113,7 +123,8 @@ func (s *Service) updateCurrentSchedule(tx *sql.Tx, change *schedule.ScheduleCha
 			IsActive:   true,
 		}
 
-		err = s.scheduleRepo.CreateCurrentScheduleEntry(context.Background(), newEntry)
+		// ИСПРАВЛЕНО: Передаем ctx
+		err = s.scheduleRepo.CreateCurrentScheduleEntry(ctx, tx, newEntry)
 		if err != nil {
 			return fmt.Errorf("ошибка создания новой записи: %w", err)
 		}
@@ -160,3 +171,4 @@ func (s *Service) CreateChange(ctx context.Context, change *schedule.ScheduleCha
 	log.Printf("Создана запись об изменении: %s для группы %s", change.ID, change.GroupName)
 	return nil
 }
+

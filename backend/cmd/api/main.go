@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -24,13 +25,24 @@ import (
 
 func main() {
 	// Загружаем конфигурацию
-	cfg, err := config.LoadConfig("./configs")
+	// ИСПРАВЛЕНО: Указываем путь к конкретному файлу конфигурации
+	cfg, err := config.LoadConfig("./configs/config.yaml")
 	if err != nil {
 		log.Fatalf("Ошибка загрузки конфигурации: %v", err)
 	}
 
+	// ИСПРАВЛЕНО: Формируем DSN вручную из полей конфигурации
+	dsn := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
+		cfg.Database.Host,
+		cfg.Database.Port,
+		cfg.Database.User,
+		cfg.Database.Password,
+		cfg.Database.DBName,
+		cfg.Database.SSLMode,
+	)
+
 	// Подключаемся к базе данных
-	db, err := sql.Open("postgres", cfg.GetDatabaseDSN())
+	db, err := sql.Open("postgres", dsn)
 	if err != nil {
 		log.Fatalf("Ошибка подключения к базе данных: %v", err)
 	}
@@ -53,7 +65,9 @@ func main() {
 	// Инициализируем компоненты
 	userRepo := users.NewRepository(db)
 	userService := users.NewService(userRepo)
-	jwtManager := jwt.NewManager(cfg.JWT.Secret, cfg.GetJWTTokenLifetime())
+
+	// ИСПРАВЛЕНО: Используем cfg.JWT.Expiration вместо cfg.GetJWTTokenLifetime()
+	jwtManager := jwt.NewManager(cfg.JWT.Secret, cfg.JWT.Expiration)
 
 	// Инициализируем schedule репозиторий и сервис
 	scheduleRepo := schedule.NewRepository(db)
@@ -66,11 +80,14 @@ func main() {
 	// Инициализируем change detection сервис
 	changeService := changes.NewService(scheduleRepo)
 
-	// Инициализируем scraper сервис
+	// Создание scraper сервиса
 	scraperConfig := scraper.Config{
-		BaseURL: "https://kcpt72.ru/schedule/",
-		Timeout: 30 * time.Second,
+		BaseURL:          cfg.Scraper.BaseURL,
+		Timeout:          cfg.Scraper.Timeout,
+		MainScheduleGIDs: cfg.Scraper.MainScheduleGIDs, // Передаем список gid
+		ChangesGID:       cfg.Scraper.ChangesGID,       // Передаем gid изменений
 	}
+
 	scraperService := scraper.NewService(scraperConfig, scheduleRepo, notificationService, changeService)
 
 	// Инициализируем gRPC сервер
@@ -78,7 +95,7 @@ func main() {
 
 	// Запускаем gRPC сервер в отдельной горутине
 	go func() {
-		if err := grpcServer.Start(50051, scheduleService, userService); err != nil {
+		if err := grpcServer.Start(cfg.Server.Port, scheduleService, userService); err != nil {
 			log.Fatalf("Ошибка запуска gRPC сервера: %v", err)
 		}
 	}()
@@ -105,7 +122,7 @@ func main() {
 	scraperCtx, scraperCancel := context.WithCancel(context.Background())
 	go scraperService.StartPeriodicScraping(scraperCtx)
 
-	log.Println("gRPC API Gateway запущен на порту 50051")
+	log.Printf("gRPC API Gateway запущен на порту %d", cfg.Server.Port)
 	log.Println("Web Scraper Service запущен")
 	log.Println("Change Detection Service запущен")
 	log.Println("Notification Service запущен")
