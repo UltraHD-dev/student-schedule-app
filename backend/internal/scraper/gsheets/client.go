@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // Client клиент для работы с Google Таблицами через HTTP-запросы
@@ -59,7 +60,7 @@ func (c *Client) ExportToCSVMainSchedule(ctx context.Context, sheetURL string) (
 		return nil, fmt.Errorf("не удалось извлечь ID таблицы из URL: %s", sheetURL)
 	}
 
-	log.Printf("Извлеченный ID таблицы: %s", spreadsheetID)
+	log.Printf("Извеченный ID таблицы: %s", spreadsheetID)
 
 	// Проверяем, что список gid задан
 	if len(c.sheetGIDs) == 0 {
@@ -258,6 +259,43 @@ func getBellTimings() map[string][]LessonTiming {
 	return timings
 }
 
+// removeNonPrintable удаляет непечатаемые символы из строки
+func removeNonPrintable(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsPrint(r) {
+			return r
+		}
+		return -1
+	}, s)
+}
+
+// ScheduleRecord представляет запись из таблицы расписания
+type ScheduleRecord struct {
+	GroupName string `json:"group_name"`
+	Subject   string `json:"subject"`
+	Teacher   string `json:"teacher"`
+	Classroom string `json:"classroom"`
+	TimeStart string `json:"time_start"`
+	TimeEnd   string `json:"time_end"`
+	DayOfWeek string `json:"day_of_week"`
+	// Добавим поля для номера пары и даты, если они понадобятся
+	LessonNumber int       `json:"lesson_number"`
+	Date         time.Time `json:"date"`
+}
+
+// ChangeRecord представляет запись об изменении в расписании
+type ChangeRecord struct {
+	GroupName       string    `json:"group_name"`
+	Date            time.Time `json:"date"`
+	TimeStart       string    `json:"time_start"`
+	TimeEnd         string    `json:"time_end"`
+	Subject         string    `json:"subject"`
+	Teacher         string    `json:"teacher"`
+	Classroom       string    `json:"classroom"`
+	ChangeType      string    `json:"change_type"` // "replacement", "cancellation", "addition"
+	OriginalSubject string    `json:"original_subject"`
+}
+
 // ParseScheduleRecords парсит записи расписания из данных таблицы с горизонтальной структурой
 // В соответствии с примером из ТЗ:
 // Группа | Предмет | Преподаватель | Аудитория | Время начала | Время окончания | День недели
@@ -269,64 +307,95 @@ func (c *Client) ParseScheduleRecords(csvRecords [][]string) ([]ScheduleRecord, 
 	// --- Отладочное логирование ---
 	log.Printf("DEBUG: Всего строк в CSV: %d", len(csvRecords))
 	// Выведем первые несколько строк для анализа
-	for i := 0; i < len(csvRecords) && i < 7; i++ {
-		log.Printf("DEBUG: Строка CSV[%d]: %v", i, csvRecords[i])
+	for i := 0; i < len(csvRecords) && i < 10; i++ {
+		log.Printf("DEBUG: Строка CSV[%d]: %q", i, csvRecords[i]) // Используем %q для отображения скрытых символов
 	}
 	// -----------------------------
 
-	// Получаем расписание звонков из фото
+	// Получаем расписание звонков из ТЗ
 	bellTimings := getBellTimings()
 
-	// Извлекаем список групп из строки CSV[1]
-	// Пример: [Группы - АТ 22-11, АТ 23-11, АТ 24-11, ДО 22-11-1, ДО 22-11-2          ]
+	// --- ИЗВЛЕКАЕМ СТРУКТУРУ ТАБЛИЦЫ ---
+	// 1. Извлекаем список групп из строки CSV[1]
+	// Пример: ["Группы - АТ 22-11, АТ 23-11, АТ 24-11, ДО 22-11-1, ДО 22-11-2" "" "" ...]
 	groupsLine := csvRecords[1]
-	if len(groupsLine) == 0 {
-		return nil, fmt.Errorf("строка с группами (CSV[1]) пуста")
+	if len(groupsLine) == 0 || strings.TrimSpace(groupsLine[0]) == "" {
+		return nil, fmt.Errorf("строка с группами (CSV[1]) пуста или не содержит данных")
 	}
-	// Первая ячейка содержит "Группы - ", остальные - названия групп
+
+	// groupsLine[0] = "Группы - АТ 22-11, АТ 23-11, АТ 24-11, ДО 22-11-1, ДО 22-11-2"
+	groupsHeader := strings.TrimSpace(groupsLine[0])
+	parts := strings.SplitN(groupsHeader, "-", 2) // Разделяем только по первому "-"
+	if len(parts) < 2 {
+		return nil, fmt.Errorf("невозможно извлечь список групп из заголовка: %s", groupsHeader)
+	}
+
+	// parts[1] = " АТ 22-11, АТ 23-11, АТ 24-11, ДО 22-11-1, ДО 22-11-2"
+	groupsListStr := strings.TrimSpace(parts[1])
+
+	// Разделяем по запятым
+	rawGroupNames := strings.Split(groupsListStr, ",")
 	var groupNames []string
-	for i := 1; i < len(groupsLine); i++ {
-		groupName := strings.TrimSpace(groupsLine[i])
-		if groupName != "" {
-			groupNames = append(groupNames, groupName)
+	for _, rawName := range rawGroupNames {
+		cleanName := strings.TrimSpace(rawName)
+		if cleanName != "" {
+			groupNames = append(groupNames, cleanName)
 		}
 	}
+
 	if len(groupNames) == 0 {
-		return nil, fmt.Errorf("не удалось извлечь названия групп из строки CSV[1]")
+		return nil, fmt.Errorf("не удалось извлечь названия групп из строки: %s", groupsListStr)
 	}
-	log.Printf("DEBUG: Найденные группы: %v", groupNames)
 
-	// Количество колонок данных на одну группу
-	// Из строки заголовков CSV[4] видно, что на каждую группу приходится 4 колонки:
-	// "Предмет", "вид занятия", "преподаватель", "Ауд."
-	columnsPerGroup := 4
+	log.Printf("DEBUG: Извлеченные названия групп из CSV[1]: %v", groupNames)
 
-	// Проверяем, что структура данных соответствует ожиданиям
-	headersLine := csvRecords[4]
-	expectedHeaderColumns := len(groupNames) * columnsPerGroup
-	if len(headersLine) < expectedHeaderColumns {
-		return nil, fmt.Errorf("ожидалось как минимум %d колонок в строке заголовков (CSV[4]), но получено %d", expectedHeaderColumns, len(headersLine))
+	// 2. Определяем индексы столбцов для каждой группы в строке данных (CSV[3])
+	// Структура:
+	// CSV[3]: ["№" "Группа1" "" "Группа2" "" ...] - Заголовки групп, каждая группа занимает 2 столбца (Группа, Пусто)
+	// CSV[4]: ["" "Предмет..." "Ауд." ...] - Подзаголовки
+	// CSV[5]+: ["1" данные...]
+	headersLine := csvRecords[3] // Заголовки групп
+	if len(headersLine) < 1+len(groupNames)*2 {
+		return nil, fmt.Errorf("ожидалось как минимум %d столбцов в строке заголовков (CSV[3]), но получено %d", 1+len(groupNames)*2, len(headersLine))
 	}
+
+	// Проверяем, что заголовки групп соответствуют извлеченным именам
+	// Индексы заголовков групп: 1, 3, 5, ...
+	var groupColumnIndices []int // Индексы первых столбцов данных для каждой группы
+	for i, groupName := range groupNames {
+		expectedHeaderIndex := 1 + i*2 // Индекс предполагаемого заголовка группы
+		if expectedHeaderIndex >= len(headersLine) {
+			return nil, fmt.Errorf("индекс заголовка группы %d выходит за границы строки CSV[3]", expectedHeaderIndex)
+		}
+		actualHeader := strings.TrimSpace(headersLine[expectedHeaderIndex])
+		if actualHeader != groupName {
+			log.Printf("Предупреждение: Ожидаемый заголовок группы '%s' в столбце %d, но найден '%s'", groupName, expectedHeaderIndex, actualHeader)
+			// Продолжаем, надеясь, что порядок правильный
+		}
+		// Индекс столбца с "Предмет..." для этой группы (тот же, что и заголовок группы)
+		groupColumnIndices = append(groupColumnIndices, expectedHeaderIndex)
+		log.Printf("DEBUG: Группа '%s' начинается со столбца %d (данные в %d и %d)", groupName, expectedHeaderIndex, expectedHeaderIndex, expectedHeaderIndex+1)
+	}
+	// --- КОНЕЦ ИЗВЛЕЧЕНИЯ СТРУКТУРЫ ---
+
+	// Количество "подстолбцов" на одну группу
+	const subColumnsPerGroup = 2 // Предмет+Аудитория
 
 	// Инициализируем список для результатов
 	var records []ScheduleRecord
 
-	// Переменная для хранения текущего дня недели и даты
+	// Переменные для хранения текущего дня недели и даты
 	currentDayOfWeek := ""
 	currentDateStr := ""
-	// var currentDate time.Time // УДАЛЕНО: неиспользуемая переменная
+	var currentDate time.Time
 
 	// Итерируемся по строкам с данными, начиная с CSV[5]
-	for i := 5; i < len(csvRecords); i++ {
+	// НО! Нужно учитывать, что строки с "День - ..." тоже могут встречаться
+	dataStartRowIndex := 5
+	for i := dataStartRowIndex; i < len(csvRecords); i++ {
 		row := csvRecords[i]
 
-		// Пропускаем пустые строки
-		if len(row) == 0 || (len(row) == 1 && strings.TrimSpace(row[0]) == "") {
-			continue
-		}
-
 		// Проверяем, является ли строка заголовком дня (содержит "День -")
-		// Пример: [День - Понедельник, 23.06.2025          ]
 		if len(row) > 0 && strings.Contains(strings.ToLower(row[0]), "день -") {
 			// Извлекаем день недели и дату
 			// row[0] = "День - Понедельник, 23.06.2025"
@@ -340,22 +409,24 @@ func (c *Client) ParseScheduleRecords(csvRecords [][]string) ([]ScheduleRecord, 
 				}
 				// parts[1] = " 23.06.2025"
 				currentDateStr = strings.TrimSpace(parts[1])
-				// УДАЛЕНО: currentDate, err := time.Parse("02.01.2006", currentDateStr)
-				_, err := time.Parse("02.01.2006", currentDateStr) // ИЗМЕНЕНО: убрана переменная currentDate
+				var err error
+				currentDate, err = time.Parse("02.01.2006", currentDateStr)
 				if err != nil {
 					log.Printf("Предупреждение: Не удалось распарсить дату '%s' в строке %d: %v", currentDateStr, i, err)
-					// УДАЛЕНО: currentDate = time.Time{} // Обнуляем дату в случае ошибки
+					// Если дата не распарсилась, обнуляем ее
+					currentDate = time.Time{}
 				} else {
 					log.Printf("DEBUG: Найден день: %s, дата: %s", currentDayOfWeek, currentDateStr)
 				}
 			}
 			continue // Переходим к следующей строке
 		}
-
-		// Если это не строка с днем, считаем её строкой с данными
+		// Обработка строки с данными
 		// Проверяем, достаточно ли колонок
-		if len(row) < expectedHeaderColumns {
-			log.Printf("Предупреждение: Строка %d имеет недостаточно колонок (%d < %d), пропускаем", i, len(row), expectedHeaderColumns)
+		// Мы ожидаем как минимум данные для последней группы
+		expectedMinColumns := groupColumnIndices[len(groupColumnIndices)-1] + subColumnsPerGroup
+		if len(row) <= expectedMinColumns {
+			log.Printf("Предупреждение: Строка %d имеет недостаточно колонок (%d <= %d), пропускаем", i, len(row), expectedMinColumns)
 			continue
 		}
 
@@ -363,6 +434,11 @@ func (c *Client) ParseScheduleRecords(csvRecords [][]string) ([]ScheduleRecord, 
 		lessonNumberStr := strings.TrimSpace(row[0])
 		if lessonNumberStr == "" {
 			log.Printf("Предупреждение: Пустой номер пары в строке %d, пропускаем", i)
+			continue
+		}
+		// Особая проверка на "№"
+		if lessonNumberStr == "№" {
+			log.Printf("DEBUG: Пропущена строка заголовка с '№' в строке %d", i)
 			continue
 		}
 		lessonNumber, err := strconv.Atoi(lessonNumberStr)
@@ -374,7 +450,6 @@ func (c *Client) ParseScheduleRecords(csvRecords [][]string) ([]ScheduleRecord, 
 		// Получаем время начала и окончания для текущей пары и дня
 		var timeStart, timeEnd string = "", ""
 		if currentDayOfWeek != "" {
-			// ИСПРАВЛЕНО: Используем правильный ключ для поиска расписания звонков
 			if timingsForDay, ok := bellTimings[currentDayOfWeek]; ok {
 				for _, timing := range timingsForDay {
 					if timing.Number == lessonNumber {
@@ -393,32 +468,37 @@ func (c *Client) ParseScheduleRecords(csvRecords [][]string) ([]ScheduleRecord, 
 
 		// Итерируемся по группам и извлекаем данные
 		for groupIndex, groupName := range groupNames {
-			// Вычисляем начальный индекс колонок для текущей группы
-			// Первая группа (индекс 0) -> колонки 1-4 (индексы 1,2,3,4)
-			// Вторая группа (индекс 1) -> колонки 5-8 (индексы 5,6,7,8)
-			// И т.д.
-			startColIndex := 1 + (groupIndex * columnsPerGroup)
-			endColIndex := startColIndex + columnsPerGroup - 1
+			startColIndex := groupColumnIndices[groupIndex]
 
-			// Проверяем, что индексы валидны
-			if endColIndex >= len(row) {
-				log.Printf("Предупреждение: Индексы выходят за границы строки для группы %s в строке %d", groupName, i)
+			// Извлекаем данные для группы
+			// row[startColIndex] = Предмет, вид занятия, преподаватель
+			// row[startColIndex+1] = Аудитория
+			subjectCell := strings.TrimSpace(removeNonPrintable(row[startColIndex]))
+			classroom := strings.TrimSpace(removeNonPrintable(row[startColIndex+1]))
+
+			// Пропускаем пустые записи
+			if subjectCell == "" {
 				continue
 			}
 
-			// Извлекаем данные для группы
-			// row[startColIndex] = Предмет
-			// row[startColIndex+1] = Вид занятия (игнорируем)
-			// row[startColIndex+2] = Преподаватель
-			// row[startColIndex+3] = Аудитория
-			subject := strings.TrimSpace(row[startColIndex])
-			// Вид занятия пропускаем
-			teacher := strings.TrimSpace(row[startColIndex+2])
-			classroom := strings.TrimSpace(row[startColIndex+3])
-
-			// Пропускаем пустые записи
-			if subject == "" {
-				continue
+			// Простая логика разделения subjectCell
+			// Предполагаем формат: "Предмет / Вид занятия / Преподаватель" или "Предмет / Преподаватель"
+			// или просто "Предмет"
+			var subject, teacher string
+			parts := strings.Split(subjectCell, "/")
+			if len(parts) >= 3 {
+				// Предмет / Вид / Препод
+				subject = strings.TrimSpace(parts[0])
+				// Вид игнорируем
+				teacher = strings.TrimSpace(parts[2])
+			} else if len(parts) == 2 {
+				// Предмет / Препод
+				subject = strings.TrimSpace(parts[0])
+				teacher = strings.TrimSpace(parts[1])
+			} else {
+				// Только предмет или другой формат
+				subject = strings.TrimSpace(subjectCell)
+				teacher = "" // Преподаватель не указан
 			}
 
 			// Создаем запись
@@ -430,11 +510,8 @@ func (c *Client) ParseScheduleRecords(csvRecords [][]string) ([]ScheduleRecord, 
 				TimeStart: timeStart,
 				TimeEnd:   timeEnd,
 				DayOfWeek: currentDayOfWeek,
+				Date:      currentDate,
 			}
-
-			// Добавляем дату, если она была распарсена
-			// (Заполнение Date, PeriodStart, PeriodEnd будет происходить позже в другом месте,
-			//  как это было в оригинальной логике)
 
 			records = append(records, record)
 		}
@@ -572,7 +649,7 @@ func (c *Client) ParseChangeRecords(csvRecords [][]string) ([]ChangeRecord, erro
 
 // extractSpreadsheetID извлекает ID таблицы из URL
 func (c *Client) extractSpreadsheetID(sheetURL string) string {
-	// Пример URL:     https://docs.google.com/spreadsheets/d/ID/edit?usp=sharing
+	// Пример URL:       https://docs.google.com/spreadsheets/d/ID/edit?usp=sharing
 	// Извлекаем ID из URL
 
 	// Убираем параметры из URL если есть
@@ -584,7 +661,7 @@ func (c *Client) extractSpreadsheetID(sheetURL string) string {
 	}
 
 	// Извлекаем ID из пути
-	// Пример:       https://docs.google.com/spreadsheets/d/ID/edit
+	// Пример:         https://docs.google.com/spreadsheets/d/ID/edit
 	re := regexp.MustCompile(`/spreadsheets/d/([^/]+)`)
 	matches := re.FindStringSubmatch(sheetURL)
 	if len(matches) > 1 {
@@ -592,30 +669,6 @@ func (c *Client) extractSpreadsheetID(sheetURL string) string {
 	}
 
 	return ""
-}
-
-// ScheduleRecord представляет запись из таблицы расписания
-type ScheduleRecord struct {
-	GroupName string `json:"group_name"`
-	Subject   string `json:"subject"`
-	Teacher   string `json:"teacher"`
-	Classroom string `json:"classroom"`
-	TimeStart string `json:"time_start"`
-	TimeEnd   string `json:"time_end"`
-	DayOfWeek string `json:"day_of_week"`
-}
-
-// ChangeRecord представляет запись об изменении в расписании
-type ChangeRecord struct {
-	GroupName       string    `json:"group_name"`
-	Date            time.Time `json:"date"`
-	TimeStart       string    `json:"time_start"`
-	TimeEnd         string    `json:"time_end"`
-	Subject         string    `json:"subject"`
-	Teacher         string    `json:"teacher"`
-	Classroom       string    `json:"classroom"`
-	ChangeType      string    `json:"change_type"` // "replacement", "cancellation", "addition"
-	OriginalSubject string    `json:"original_subject"`
 }
 
 // max вспомогательная функция для нахождения максимума из списка int

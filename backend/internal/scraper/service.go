@@ -243,9 +243,13 @@ func (s *Service) ScrapeScheduleChanges(ctx context.Context) error {
 	// 1. Запрос к сайту колледжа для поиска ссылки на таблицу изменений
 	log.Printf("Отправляем запрос к %s для поиска таблицы изменений", s.baseURL)
 
+	log.Printf("DEBUG: Попытка запроса к URL: %s", s.baseURL)
+
 	// Создаем контекст с таймаутом для HTTP-запроса
 	httpCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
+
+	log.Printf("DEBUG: Запрос отправлен, ожидание ответа...")
 
 	req, err := http.NewRequestWithContext(httpCtx, "GET", s.baseURL, nil)
 	if err != nil {
@@ -254,9 +258,12 @@ func (s *Service) ScrapeScheduleChanges(ctx context.Context) error {
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
+		log.Printf("DEBUG: Ошибка при выполнении запроса: %v", err)
 		return fmt.Errorf("ошибка запроса к сайту колледжа: %w", err)
 	}
 	defer resp.Body.Close()
+
+	log.Printf("DEBUG: Получен ответ со статусом: %d", resp.StatusCode)
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("сайт колледжа вернул статус %d", resp.StatusCode)
