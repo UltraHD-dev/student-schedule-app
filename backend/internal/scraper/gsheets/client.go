@@ -74,8 +74,8 @@ func (c *Client) ExportToCSVMainSchedule(ctx context.Context, sheetURL string) (
 		log.Printf("Экспортируем данные с листа gid=%d", gid)
 
 		// Формируем URL для экспорта CSV конкретного листа
-		exportURL := fmt.Sprintf("https://docs.google.com/spreadsheets/d/%s/export?format=csv&gid=%d", spreadsheetID, gid)
 		// ИСПРАВЛЕНО: Убраны лишние пробелы в начале URL
+		exportURL := fmt.Sprintf("https://docs.google.com/spreadsheets/d/%s/export?format=csv&gid=%d", spreadsheetID, gid)
 
 		// Создаем запрос с контекстом
 		req, err := http.NewRequestWithContext(ctx, "GET", exportURL, nil)
@@ -198,7 +198,7 @@ func (c *Client) ExportToCSVChanges(ctx context.Context, sheetURL string, gid in
 	return records, nil
 }
 
-// ScheduleBellTimings представляет расписание звонков из фото
+// ScheduleBellTimings представляет расписание звонков из ТЗ
 // Структура для хранения времени начала и окончания пар
 type ScheduleBellTimings struct {
 	DayOfWeek string
@@ -211,9 +211,9 @@ type LessonTiming struct {
 	TimeEnd   string // "HH:MM"
 }
 
-// getBellTimings возвращает расписание звонков из фото
+// getBellTimings возвращает расписание звонков из ТЗ
 func getBellTimings() map[string][]LessonTiming {
-	// Данные из фото
+	// Данные из ТЗ
 	// Преобразуем данные в более удобный для поиска формат
 	timings := make(map[string][]LessonTiming)
 
@@ -315,8 +315,8 @@ func (c *Client) ParseScheduleRecords(csvRecords [][]string) ([]ScheduleRecord, 
 	// Получаем расписание звонков из ТЗ
 	bellTimings := getBellTimings()
 
-	// --- ИЗВЛЕКАЕМ СТРУКТУРУ ТАБЛИЦЫ ---
-	// 1. Извлекаем список групп из строки CSV[1]
+	// --- ИСПРАВЛЕНА ЛОГИКА ИЗВЛЕЧЕНИЯ ГРУПП ---
+	// Извлекаем список групп из строки CSV[1]
 	// Пример: ["Группы - АТ 22-11, АТ 23-11, АТ 24-11, ДО 22-11-1, ДО 22-11-2" "" "" ...]
 	groupsLine := csvRecords[1]
 	if len(groupsLine) == 0 || strings.TrimSpace(groupsLine[0]) == "" {
@@ -347,12 +347,14 @@ func (c *Client) ParseScheduleRecords(csvRecords [][]string) ([]ScheduleRecord, 
 		return nil, fmt.Errorf("не удалось извлечь названия групп из строки: %s", groupsListStr)
 	}
 
-	log.Printf("DEBUG: Извлеченные названия групп из CSV[1]: %v", groupNames)
+	log.Printf("DEBUG: Извеченные названия групп из CSV[1]: %v", groupNames)
+	// --- КОНЕЦ ИСПРАВЛЕННОЙ ЛОГИКИ ИЗВЛЕЧЕНИЯ ГРУПП ---
 
-	// 2. Определяем индексы столбцов для каждой группы в строке данных (CSV[3])
+	// --- ИСПРАВЛЕНА ЛОГИКА ИНДЕКСОВ СТОЛБЦОВ ---
+	// Определяем индексы столбцов для каждой группы в данных
 	// Структура:
 	// CSV[3]: ["№" "Группа1" "" "Группа2" "" ...] - Заголовки групп, каждая группа занимает 2 столбца (Группа, Пусто)
-	// CSV[4]: ["" "Предмет..." "Ауд." ...] - Подзаголовки
+	// CSV[4]: ["" "Предмет, вид занятия, преподаватель" "Ауд." ...] - Подзаголовки
 	// CSV[5]+: ["1" данные...]
 	headersLine := csvRecords[3] // Заголовки групп
 	if len(headersLine) < 1+len(groupNames)*2 {
@@ -376,7 +378,7 @@ func (c *Client) ParseScheduleRecords(csvRecords [][]string) ([]ScheduleRecord, 
 		groupColumnIndices = append(groupColumnIndices, expectedHeaderIndex)
 		log.Printf("DEBUG: Группа '%s' начинается со столбца %d (данные в %d и %d)", groupName, expectedHeaderIndex, expectedHeaderIndex, expectedHeaderIndex+1)
 	}
-	// --- КОНЕЦ ИЗВЛЕЧЕНИЯ СТРУКТУРЫ ---
+	// --- КОНЕЦ ИСПРАВЛЕННОЙ ЛОГИКИ ИНДЕКСОВ ---
 
 	// Количество "подстолбцов" на одну группу
 	const subColumnsPerGroup = 2 // Предмет+Аудитория
@@ -395,7 +397,13 @@ func (c *Client) ParseScheduleRecords(csvRecords [][]string) ([]ScheduleRecord, 
 	for i := dataStartRowIndex; i < len(csvRecords); i++ {
 		row := csvRecords[i]
 
+		// Пропускаем пустые строки
+		if len(row) == 0 || (len(row) == 1 && strings.TrimSpace(row[0]) == "") {
+			continue
+		}
+
 		// Проверяем, является ли строка заголовком дня (содержит "День -")
+		// Пример: [День - Понедельник, 23.06.2025          ]
 		if len(row) > 0 && strings.Contains(strings.ToLower(row[0]), "день -") {
 			// Извлекаем день недели и дату
 			// row[0] = "День - Понедельник, 23.06.2025"
@@ -413,14 +421,14 @@ func (c *Client) ParseScheduleRecords(csvRecords [][]string) ([]ScheduleRecord, 
 				currentDate, err = time.Parse("02.01.2006", currentDateStr)
 				if err != nil {
 					log.Printf("Предупреждение: Не удалось распарсить дату '%s' в строке %d: %v", currentDateStr, i, err)
-					// Если дата не распарсилась, обнуляем ее
-					currentDate = time.Time{}
+					currentDate = time.Time{} // Обнуляем дату в случае ошибки
 				} else {
 					log.Printf("DEBUG: Найден день: %s, дата: %s", currentDayOfWeek, currentDateStr)
 				}
 			}
 			continue // Переходим к следующей строке
 		}
+
 		// Обработка строки с данными
 		// Проверяем, достаточно ли колонок
 		// Мы ожидаем как минимум данные для последней группы
@@ -496,9 +504,8 @@ func (c *Client) ParseScheduleRecords(csvRecords [][]string) ([]ScheduleRecord, 
 				subject = strings.TrimSpace(parts[0])
 				teacher = strings.TrimSpace(parts[1])
 			} else {
-				// Только предмет или другой формат
+				// Только предмет
 				subject = strings.TrimSpace(subjectCell)
-				teacher = "" // Преподаватель не указан
 			}
 
 			// Создаем запись
@@ -510,7 +517,9 @@ func (c *Client) ParseScheduleRecords(csvRecords [][]string) ([]ScheduleRecord, 
 				TimeStart: timeStart,
 				TimeEnd:   timeEnd,
 				DayOfWeek: currentDayOfWeek,
-				Date:      currentDate,
+				// Добавим поля для номера пары и даты, если они понадобятся
+				LessonNumber: lessonNumber,
+				Date:         currentDate,
 			}
 
 			records = append(records, record)
